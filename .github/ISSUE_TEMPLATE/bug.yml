@@ -1,0 +1,21 @@
+name: 问题反馈
+description: 报告记忆行为、模块接入、星图或构建问题
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Thinkstar、Aurabot 和 Node 版本
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: 发生位置
+      options: [记忆核心, Aurabot 模块, 独立工作台, 星图, 构建或 Release]
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤、预期与实际结果
+      description: 使用合成例子；日志和截图请先去除聊天原文、身份信息和密钥。
+    validations:
+      required: true

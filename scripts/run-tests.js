@@ -1,0 +1,12 @@
+import { readdirSync,mkdirSync,mkdtempSync,rmSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { join,resolve,sep } from 'node:path';
+import { spawnSync } from 'node:child_process';
+const root=fileURLToPath(new URL('../',import.meta.url));
+const files=readdirSync(join(root,'test'),{withFileTypes:true}).filter(item=>item.isFile()&&item.name.endsWith('.test.js')).map(item=>join(root,'test',item.name)).sort();
+const tempRoot=join(root,'runtime-data','test-tmp');mkdirSync(tempRoot,{recursive:true});
+const taskTemp=mkdtempSync(join(tempRoot,'run-'));
+const result=spawnSync(process.execPath,['--test',...files],{cwd:root,stdio:'inherit',windowsHide:true,env:{...process.env,TEMP:taskTemp,TMP:taskTemp,TMPDIR:taskTemp}});
+if(!resolve(taskTemp).startsWith(resolve(tempRoot)+sep))throw new Error('Unsafe test cleanup path');
+rmSync(taskTemp,{recursive:true,force:true});
+if(result.error)throw result.error;process.exitCode=result.status??1;

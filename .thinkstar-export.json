@@ -1,0 +1,787 @@
+{
+  "kind": "thinkstar-source-export",
+  "schema": 1,
+  "version": "0.4.0",
+  "files": [
+    {
+      "path": ".gitattributes",
+      "sha256": "a0c701549ca7e3c44df7580a84c37400d04dd2b95be1b17184180ce7fb3969f7",
+      "bytes": 180
+    },
+    {
+      "path": ".github/ISSUE_TEMPLATE/bug.yml",
+      "sha256": "39d09f3ba8b229cbebce129c038e653fa9c1a63c25f1efec744aee455721d666",
+      "bytes": 644
+    },
+    {
+      "path": ".github/dependabot.yml",
+      "sha256": "e49b0bad89c4caf2a07bb3fa625ff431977115a81a39b455061e96534be291a0",
+      "bytes": 113
+    },
+    {
+      "path": ".github/pull_request_template.md",
+      "sha256": "48fdc47a0bdcf0d05ccde2a937c36cbe281be9588463e3ebf3599adcc823319c",
+      "bytes": 386
+    },
+    {
+      "path": ".github/workflows/ci.yml",
+      "sha256": "6b35e7597b8577163e4ab631694d22a0d8fd4433c2595836290a5347509433d0",
+      "bytes": 1181
+    },
+    {
+      "path": ".github/workflows/release.yml",
+      "sha256": "0492434243489d3dee556a9aed2ad65edf0ae95fcb4f6c03c0cfd5add1078869",
+      "bytes": 871
+    },
+    {
+      "path": ".gitignore",
+      "sha256": "7e7c02f50ab4862103639c37a6bf7896ab5fadaffa84d36c41ce89785b8c6eb9",
+      "bytes": 256
+    },
+    {
+      "path": "AGENTS.md",
+      "sha256": "da0bf4f2b8b05da0426ec8096f24fc69adca8d68df70eb42ca77ae4d4ea3f74a",
+      "bytes": 888
+    },
+    {
+      "path": "CHANGELOG.md",
+      "sha256": "c73406defc9712ff4304fc5f1b6c4e83fbb6079ec4642b7c1535419e6d7d3586",
+      "bytes": 10733
+    },
+    {
+      "path": "CONTRIBUTING.md",
+      "sha256": "3a46f6666018358e1994ed310a10963982e644b24d56ebfe06c7d6a101ea1ece",
+      "bytes": 1119
+    },
+    {
+      "path": "LICENSE",
+      "sha256": "7f6353cc219e6ff35f42e9ca58f0209e63d1066609ff903b05f26acba7c24778",
+      "bytes": 328
+    },
+    {
+      "path": "README.md",
+      "sha256": "643322fc6b630551435e118bfb84cd93a025ebaf1477cb4c9fc5862053d37caf",
+      "bytes": 7008
+    },
+    {
+      "path": "THIRD-PARTY-NOTICES.md",
+      "sha256": "edd98951e49c3cfc0e395c72a7b92303d49baa3e9c553d0fe497dc6384f0e41c",
+      "bytes": 563
+    },
+    {
+      "path": "adapters/aurabot/live-reader.js",
+      "sha256": "f5616e49b0710a30794c1a253179fe0db32e1f414b15b764f494da0955af50e5",
+      "bytes": 3040
+    },
+    {
+      "path": "adapters/aurabot/mapper.js",
+      "sha256": "24e047b6fa7438e35815f0ef44e38c13da04b0092185028170164b66220b5227",
+      "bytes": 22908
+    },
+    {
+      "path": "adapters/aurabot/module/LICENSE",
+      "sha256": "e9585b7ae85cb06b87b2cde8cac425029e5cada4ae1c1e9674e691fb3898f8e5",
+      "bytes": 363
+    },
+    {
+      "path": "adapters/aurabot/module/README.md",
+      "sha256": "0e311640a0b9cab8b29145e680128ad73599aa0b2b9b369775f1725a0ed8a003",
+      "bytes": 11167
+    },
+    {
+      "path": "adapters/aurabot/module/THIRD-PARTY-NOTICES.md",
+      "sha256": "352cd2b9401c47d15b1b84af11724051d3f197988f923e56fc8be2275242c48e",
+      "bytes": 626
+    },
+    {
+      "path": "adapters/aurabot/module/index.mjs",
+      "sha256": "6278a8101ac2e1ff0a08dd1a58de152564341f452b66b1fa9d9568dc629bd236",
+      "bytes": 1872
+    },
+    {
+      "path": "adapters/aurabot/module/lib/context-coordinator.js",
+      "sha256": "d3df279ab53152c74b80580fec05876abeb9d7e093b9490b1a2119ab1b1f355b",
+      "bytes": 10836
+    },
+    {
+      "path": "adapters/aurabot/module/lib/host-activity.js",
+      "sha256": "01e78b1bf9c2d8f116610353d43541b9d76e28d899c067cab78fccd5d895fe14",
+      "bytes": 4658
+    },
+    {
+      "path": "adapters/aurabot/module/lib/host-bridge.js",
+      "sha256": "5bb5af945a5bb5f73ae53606b104f4ae741f6ca817a0548b09bfba04e259f3c6",
+      "bytes": 38366
+    },
+    {
+      "path": "adapters/aurabot/module/lib/host-context-monitor.js",
+      "sha256": "f9485aeaa49ece22c49a6be3051012a2dc2c60719594864189f1a59c841b06fc",
+      "bytes": 9303
+    },
+    {
+      "path": "adapters/aurabot/module/lib/host-evaluation.js",
+      "sha256": "eac89f0de9142e761a7af8e8415dfe095125b944ff07af9db637cbadd03a620f",
+      "bytes": 17520
+    },
+    {
+      "path": "adapters/aurabot/module/lib/host-model-client.js",
+      "sha256": "c3af850b141d192e26b28a9a811ae58b649ae7cb24e58935378091dd5e1a4e2b",
+      "bytes": 2971
+    },
+    {
+      "path": "adapters/aurabot/module/lib/host-semantic.js",
+      "sha256": "42a0cd7fc66ab9a5be55208dc0a00c784af35f1f897b8945d3d3dad44b85e741",
+      "bytes": 2053
+    },
+    {
+      "path": "adapters/aurabot/module/lib/memory-compat.js",
+      "sha256": "1d089675e04ca4020d23ce038ae10bfd5da3cead6d6bac73250b2d6fe0560539",
+      "bytes": 3622
+    },
+    {
+      "path": "adapters/aurabot/module/module.json",
+      "sha256": "f114509e7dfa61e79d992a78f0015c1c098efb78564d588de7d9bc0cd83241fc",
+      "bytes": 471
+    },
+    {
+      "path": "adapters/aurabot/module/panel.js",
+      "sha256": "f2050aa7a23f97d0cf67f6a40af76f411942948d2dd676422cb0e728b3f3ad4d",
+      "bytes": 17700
+    },
+    {
+      "path": "adapters/aurabot/reader.js",
+      "sha256": "2c6a8fe140885f7a64cc1898999a03d7c98a8fe6738cb5582f8cfd78a279712a",
+      "bytes": 9274
+    },
+    {
+      "path": "adapters/aurabot/view-provider.js",
+      "sha256": "e8b93e10c06d7079798af0c2fe9d0ca1225faa29305bac0d871683ce5f4d2a72",
+      "bytes": 12089
+    },
+    {
+      "path": "adapters/deepseek-client.js",
+      "sha256": "444278caea00c4e1f65debeb8eb9bfd21ec43b982f850bbff8012d31eaffb8b9",
+      "bytes": 3505
+    },
+    {
+      "path": "adapters/json-file-store.js",
+      "sha256": "a89622d750ed0561a2f06cf77a8dca9c8b48988d5f123598c5d575593f492b1a",
+      "bytes": 2776
+    },
+    {
+      "path": "apps/memory-sea/assets/milky-way-background.jpg",
+      "sha256": "6df7ce3cea79841c15e7d04750c073b6680671efa01be3da5eae433846e28c70",
+      "bytes": 981827
+    },
+    {
+      "path": "apps/memory-sea/assets/milky-way-background.json",
+      "sha256": "bdc1bd0370f3d2665a0e2c0a7361033620fc63f19669f9d47f7d2d2b2d98c034",
+      "bytes": 545
+    },
+    {
+      "path": "apps/memory-sea/favicon.svg",
+      "sha256": "7998f238e4139e6813906abfc35011e31ae594ead68f2a7072a64c3e568b6405",
+      "bytes": 369
+    },
+    {
+      "path": "apps/memory-sea/index.html",
+      "sha256": "8c3cbf3ee1efba041240c877c124f9f6589d731429965a99788e82d61d24f3d2",
+      "bytes": 8058
+    },
+    {
+      "path": "apps/memory-sea/src/camera.js",
+      "sha256": "cd7abed1b34cf6b85b50bb955db55100b44ec5dc9343d96f51d021535b56eefd",
+      "bytes": 1705
+    },
+    {
+      "path": "apps/memory-sea/src/layout.js",
+      "sha256": "5f210da5ea3d851612ff63443c8377637abc69f2813dea009d40eca41ec40dd3",
+      "bytes": 3818
+    },
+    {
+      "path": "apps/memory-sea/src/main.js",
+      "sha256": "ff52c03554ae9a58854a33b52f097663ed374e56c9df5dbc029471126c36b1d7",
+      "bytes": 25788
+    },
+    {
+      "path": "apps/memory-sea/src/provider.js",
+      "sha256": "5edbcfe373c525d9eea38122c4a6c537736e3db651b7e1dc915146cde6e4ad44",
+      "bytes": 1089
+    },
+    {
+      "path": "apps/memory-sea/src/renderer.js",
+      "sha256": "9a9664bed1bb1fa4c160705f2db36daaf1376051bd87c969a1656e55c8484aab",
+      "bytes": 10846
+    },
+    {
+      "path": "apps/memory-sea/src/v5-brain.js",
+      "sha256": "ed40236ab63134b96fa0dad2aa43f3172704e7925c55bc2d4602534d2e318d8f",
+      "bytes": 8698
+    },
+    {
+      "path": "apps/memory-sea/src/v5-camera.js",
+      "sha256": "3d7ef978274a3067a3de2d4b605961c7589f538e050fca5a364ce603a7c38e1b",
+      "bytes": 3198
+    },
+    {
+      "path": "apps/memory-sea/src/v5-character.js",
+      "sha256": "36553712950485aed735a84af34e82b127c6639c9c3628dc807cbe12fcdd4cb5",
+      "bytes": 3334
+    },
+    {
+      "path": "apps/memory-sea/src/v5-evaluation.js",
+      "sha256": "6b96410e720ebf5c1c0de3c108a276e241ad67940a702fb9b6a68cddd650714b",
+      "bytes": 5098
+    },
+    {
+      "path": "apps/memory-sea/src/v5-glb-character.js",
+      "sha256": "cc09bbb78edcadd60df7c31e4dca0e2418d71a5046f09d036fc491e287a5216a",
+      "bytes": 12045
+    },
+    {
+      "path": "apps/memory-sea/src/v5-inspector-tools.js",
+      "sha256": "f5d03f7e8a0433a0a7e138dd4058b571cf3d40a560e107faea7e72800fd6dfe1",
+      "bytes": 12197
+    },
+    {
+      "path": "apps/memory-sea/src/v5-main.js",
+      "sha256": "627d2da4f8381800b3e9e3a004989349c08ceefceac6935ea8faae5e546b0e6d",
+      "bytes": 67535
+    },
+    {
+      "path": "apps/memory-sea/src/v5-nebula.js",
+      "sha256": "bdff73420c2d2f03f175f1216ef46428ada8ea486429363b778daece2dafce8e",
+      "bytes": 7828
+    },
+    {
+      "path": "apps/memory-sea/src/v5-playback.js",
+      "sha256": "b258c045efd631978b2dc272b532d00aed909bc2b7d3256b8987c6d3a6d47c61",
+      "bytes": 2740
+    },
+    {
+      "path": "apps/memory-sea/src/v5-scene.js",
+      "sha256": "62c9479abf455eaf611a8bbfb544fb3f53be854687dafa602624d9a5c754a67d",
+      "bytes": 33238
+    },
+    {
+      "path": "apps/memory-sea/src/v5-spatial.js",
+      "sha256": "5bfd91513dfaa9a9882615183f2ef3039bb807c2fb39748fe98c65e33c1e9751",
+      "bytes": 2979
+    },
+    {
+      "path": "apps/memory-sea/styles.css",
+      "sha256": "b98eea3ecfa9098f689da747605a546da3bff307723690a5209a588988a348ac",
+      "bytes": 23389
+    },
+    {
+      "path": "apps/memory-sea/vendor/three/BufferGeometryUtils.js",
+      "sha256": "319782169ed48af21fcaa251d839ecb8e58f14174aacbf68b74a437f3d6a3a98",
+      "bytes": 39165
+    },
+    {
+      "path": "apps/memory-sea/vendor/three/GLTFLoader.js",
+      "sha256": "7bbda9f3af9b5acbd89a33cfc0aeb020f34d2d31a72829c79c0b354f9502c8e5",
+      "bytes": 119859
+    },
+    {
+      "path": "apps/memory-sea/vendor/three/LICENSE",
+      "sha256": "8b378ebe60e2fe500158cb0ac71cb5e8b7d92953c2abcc63a0eb90499653b5bc",
+      "bytes": 1081
+    },
+    {
+      "path": "apps/memory-sea/vendor/three/RoomEnvironment.js",
+      "sha256": "77d4d2bed2b60cb98424764264aedd84b56bbf3211e0f48430e15608aeded9dc",
+      "bytes": 4972
+    },
+    {
+      "path": "apps/memory-sea/vendor/three/SkeletonUtils.js",
+      "sha256": "eedd768765d6553f8082953ab3882e2c86dacc2eb7d180a312d1d52e86bb35c5",
+      "bytes": 11547
+    },
+    {
+      "path": "apps/memory-sea/vendor/three/provenance.json",
+      "sha256": "a3ad8b5aae03b182c2145b26d465c02f03a40930010531d100806928c70966da",
+      "bytes": 313
+    },
+    {
+      "path": "apps/memory-sea/vendor/three/three.core.js",
+      "sha256": "613e370f76638fdef83926642bf256dc9615684922de1ce1f63a8583e5d78578",
+      "bytes": 1474799
+    },
+    {
+      "path": "apps/memory-sea/vendor/three/three.module.js",
+      "sha256": "104f56145899722094556490d787aae0617cc2fc3382f31df02d724ea1aee341",
+      "bytes": 658900
+    },
+    {
+      "path": "core/graph-projector.js",
+      "sha256": "a0b3e9dac53e5e080d7bb0191045625700b72961cc6b161cb6df5cb71a48d36e",
+      "bytes": 7199
+    },
+    {
+      "path": "core/memory-service.js",
+      "sha256": "ce96487fce2d46713b93fba5983388d2a719d0b2700ad843b95824336975b742",
+      "bytes": 7540
+    },
+    {
+      "path": "core/model.js",
+      "sha256": "5e106dace45e0eb562b16549c4363ace8e7d32c9b5d3c3bcfbc51726fb07ae03",
+      "bytes": 14291
+    },
+    {
+      "path": "core/store.js",
+      "sha256": "0b0bf9826e22e03450ca0cb81401fbd44f9cdea1c3a32bc600bcded63aa596ba",
+      "bytes": 9985
+    },
+    {
+      "path": "core/v5-archive.js",
+      "sha256": "7f213f477ad592e4b882cb49d6423c52e297b1a9af26a44a34c81046f6f38ae4",
+      "bytes": 17258
+    },
+    {
+      "path": "core/v5-config.js",
+      "sha256": "0f324fde7d6f44477ecb0dc0b0c9f235389159a49548701fcb618787063d8144",
+      "bytes": 11758
+    },
+    {
+      "path": "core/v5-console.js",
+      "sha256": "488892c9cddfdd6519d5fe62187596fe6c36b601e902578cf0ecf58dfe94e433",
+      "bytes": 3249
+    },
+    {
+      "path": "core/v5-dialogue.js",
+      "sha256": "a28449a7b29337c6ae5ecefb03d664a8ab1c90de07c6e4a74d8d0bdcec88ff5d",
+      "bytes": 27916
+    },
+    {
+      "path": "core/v5-evidence.js",
+      "sha256": "e0cbc626aa9fb022be62d5f67eefcba55a50ed21daf52cbd5d1415c2397a2277",
+      "bytes": 4654
+    },
+    {
+      "path": "core/v5-facts.js",
+      "sha256": "668444aa6752b484539556c63a79cbda6fd5833ee18ec0386c519d72e82d1d9f",
+      "bytes": 5086
+    },
+    {
+      "path": "core/v5-insights.js",
+      "sha256": "c0c92d49465e4dc848e6634319fc425baba6fafa9918681f25e351fc5cc688c2",
+      "bytes": 1753
+    },
+    {
+      "path": "core/v5-maintenance.js",
+      "sha256": "e47dba671490a5125a0823fac9597e99c746cca540ce5b3d92696ed26c8f4edd",
+      "bytes": 641
+    },
+    {
+      "path": "core/v5-model-service.js",
+      "sha256": "c3ab39edaa122e4ca687c029782f1fbf0ad9ad91b68eaa7711ef2ff1e6dd23b8",
+      "bytes": 24961
+    },
+    {
+      "path": "core/v5-param-help.js",
+      "sha256": "cfda81f8909fb534f107e2b0c0493effc127e6c59ed2c5337e078c2e41e73f00",
+      "bytes": 36703
+    },
+    {
+      "path": "core/v5-retention.js",
+      "sha256": "567a1fe4a85b86f6bfa39ad8484c8fccf167d5aad193b369879175f60dea83d6",
+      "bytes": 1120
+    },
+    {
+      "path": "core/v5-retrieval.js",
+      "sha256": "1d21fb861f69e341d9b76cf216a26a90e5ff2e8d9ce5f636c0bfdc254f2d7696",
+      "bytes": 2094
+    },
+    {
+      "path": "core/v5-rules.js",
+      "sha256": "ca045d65667784e325f7bddea11c9d8df75beda374b136fc533d0d6ed99df710",
+      "bytes": 8997
+    },
+    {
+      "path": "core/v5-runtime.js",
+      "sha256": "77d43b1810ed2b96439e5aede7e819ef89d663e63641a6120639f3fea33f85db",
+      "bytes": 94234
+    },
+    {
+      "path": "core/v5-semantic.js",
+      "sha256": "297bc4bf5b90ecb72a8221324f0904f2153003e3b99b9f92dd2653bf9e2da122",
+      "bytes": 7528
+    },
+    {
+      "path": "core/v5-storage-codec.js",
+      "sha256": "f23f5a5d709edd68a98f52276a96ea2841d8eed9baf461599bae93dc3d0a9d51",
+      "bytes": 4839
+    },
+    {
+      "path": "core/v5-store.js",
+      "sha256": "0e73df99f59a1dcdf10e13fd4972ab7cd21b5a6babda5b2e4ce9b861b0914152",
+      "bytes": 22004
+    },
+    {
+      "path": "core/v5-trash.js",
+      "sha256": "383bfadf2f6dcb1ef08f1d876b73ce8fd357deb21074c04f4ebc601eeafe0085",
+      "bytes": 12643
+    },
+    {
+      "path": "docs/architecture.md",
+      "sha256": "bad2ce626a0e8efb7cec80b133bf08b9afaaad20f989adacb43305e0e9353039",
+      "bytes": 7736
+    },
+    {
+      "path": "docs/atlas-loading-0.3.5.md",
+      "sha256": "2bb859fa1f8e804a036ca985af26bf90946be2b8acd4e4538fcec33885602e92",
+      "bytes": 5684
+    },
+    {
+      "path": "docs/atlas-visual-update-0.3.1.md",
+      "sha256": "1b72a7a80c9bd3a7a7ee4aab00cee555cc19fcea6fb157c855de20d7e9984e38",
+      "bytes": 7135
+    },
+    {
+      "path": "docs/aurabot-module.md",
+      "sha256": "5719e1950b3ab6670ebb0a215f7e25094388094a8c059b5186660aefd996523f",
+      "bytes": 6053
+    },
+    {
+      "path": "docs/compatibility-performance-0.3.2.md",
+      "sha256": "e1d8234f88076199d8951dee86f0318cf36a488f40ad91baa4b6673d65bcb877",
+      "bytes": 12777
+    },
+    {
+      "path": "docs/design/source.json",
+      "sha256": "a80958c58eed068e2e359775db0d67201de6d5079235316c6b195fc48b7815d4",
+      "bytes": 186
+    },
+    {
+      "path": "docs/design/v5.md",
+      "sha256": "436bfa32a70c26f82ea0f4fac46efbe6ce92729395985b60af856ae80dd2adee",
+      "bytes": 127057
+    },
+    {
+      "path": "docs/github-release.md",
+      "sha256": "78d712d9cee211dcec72764ac956479dd3d935d0e131280293bf7fa5738d8478",
+      "bytes": 3506
+    },
+    {
+      "path": "docs/memory-reference-upgrade.md",
+      "sha256": "fb2cf45c655b21c1ea089e8623d15c3622f3640e4e78dc6e8eec2569bf14c261",
+      "bytes": 12858
+    },
+    {
+      "path": "docs/upgrade-0.4.0.md",
+      "sha256": "a162968e6d47c73c7451754653d5c4787dddeacb2769c7b5efd9be83d701e864",
+      "bytes": 10028
+    },
+    {
+      "path": "docs/validation-0.3.0.md",
+      "sha256": "1ae83e75910c92e1be549d682b48417e31d83ebf752596ad7fe616831d3b87fe",
+      "bytes": 3854
+    },
+    {
+      "path": "fixtures/memory-sea-demo.js",
+      "sha256": "c1a1d43ab691d8384b091e1568ce857cd6a778bb8cbabd72a9f76083f241e75c",
+      "bytes": 6299
+    },
+    {
+      "path": "package.json",
+      "sha256": "7805baa65504d0d778d7d4a0863cba450e9866045eeab661335c396ff7cbd2ca",
+      "bytes": 660
+    },
+    {
+      "path": "release/resources.json",
+      "sha256": "e021b97c33c100f49df11714b4da552fb765d00db6f0a06a825f666e12193487",
+      "bytes": 311
+    },
+    {
+      "path": "scripts/benchmark-memory.js",
+      "sha256": "2e8a76986fb813f837a02f0767b39631f97e8902c606596c51b76b77c35eb098",
+      "bytes": 3898
+    },
+    {
+      "path": "scripts/build-aurabot-module.js",
+      "sha256": "c3dabe3cb68ef1a58dbee4ef977ff28ffd10e4dd46d58010f93c5dae60c5b9c1",
+      "bytes": 7007
+    },
+    {
+      "path": "scripts/check-multi-year-memory.js",
+      "sha256": "37f6460c4c7b90e51f2c158a685518dabf9a630501b2df1ff32c1d3df16d5517",
+      "bytes": 4501
+    },
+    {
+      "path": "scripts/check-release-artifacts.js",
+      "sha256": "5800bfa6f2016e7fbffd15b0bf531afe68117f43f1fa1ddc970ee6f6216cefbe",
+      "bytes": 2203
+    },
+    {
+      "path": "scripts/check-repository.js",
+      "sha256": "5085436c16dbd8de41f517ef6dc28fa9f5eee7018c537de9c6aa567f8ac8c1b0",
+      "bytes": 3213
+    },
+    {
+      "path": "scripts/check-v5-scale.js",
+      "sha256": "f681bf9b3f8625f39ff12b19b99b8224cfd76799f3f490878ba0f4c47fecbabd",
+      "bytes": 2235
+    },
+    {
+      "path": "scripts/compare-memory-upgrade.js",
+      "sha256": "07a8251a6744d3c0d2a7242bb1cc2c85e934544f9d023cce70832e77fbd30e3d",
+      "bytes": 6676
+    },
+    {
+      "path": "scripts/create-github-release.js",
+      "sha256": "92863c706422a3f4f09bbcbce05b7507de6e23c14253a4b26d97b42fe1a7c223",
+      "bytes": 2995
+    },
+    {
+      "path": "scripts/demo.js",
+      "sha256": "369dc2479d54933e48dbca18b9d933019ef0c04c643f29e60e53d069763c07cb",
+      "bytes": 2007
+    },
+    {
+      "path": "scripts/import-aurabot.js",
+      "sha256": "113b5553ad0dfeda1dd55c5f45cd14c41a8a7ae279f4eeaf48abe5f6b30c4372",
+      "bytes": 10926
+    },
+    {
+      "path": "scripts/install-aurabot-module.js",
+      "sha256": "42bb33555d78ca8973649db33d60105764c3ed04b82fdd6be2d031cc6457a7f1",
+      "bytes": 4658
+    },
+    {
+      "path": "scripts/launch-hidden.cmd",
+      "sha256": "694c49aac0243d2c778f0b6f9f5598f4a20ae376309fc83a70572572bd70d844",
+      "bytes": 819
+    },
+    {
+      "path": "scripts/launch-memory-sea.js",
+      "sha256": "482520674a2d512fd4f797d554b3be65f0f5f1695c6dc5449e02fa0f352f35b5",
+      "bytes": 2756
+    },
+    {
+      "path": "scripts/lib/zip.js",
+      "sha256": "3f71f83e80775e634a0e594ad9b299f944366d341630bc52ffb043cf4f1176fd",
+      "bytes": 3932
+    },
+    {
+      "path": "scripts/preview-v5-fixture.js",
+      "sha256": "ca214ad7d9ff54731d51d74c5bb40eb6282498ced431a18cbc40564c6f1b716f",
+      "bytes": 1432
+    },
+    {
+      "path": "scripts/preview-v5-memory-system.js",
+      "sha256": "6a5e3a2df04cee361025eb40297bcae37c05c8f0f3e5a96146db791987acb6ad",
+      "bytes": 2969
+    },
+    {
+      "path": "scripts/relocate-github-repository.js",
+      "sha256": "8781f8ff13eb570ef4bd975eddfc6b22227166155ea09b5b591646efb1aa5c50",
+      "bytes": 2635
+    },
+    {
+      "path": "scripts/run-node-task.cmd",
+      "sha256": "c7192241e954406fa86fdd2a3838a129ae01cb195727a0d2496c19df8730d3d0",
+      "bytes": 2111
+    },
+    {
+      "path": "scripts/run-tests.js",
+      "sha256": "d0aa6086db18b79bb280ba1f5544e3b49122fb04934c3bbb6155836111579416",
+      "bytes": 961
+    },
+    {
+      "path": "scripts/run-upgrade-model-comparison.js",
+      "sha256": "d44fb23614a3b7d18306139f8eb90c8a357b525aa104733f22a6748941d5c3f1",
+      "bytes": 6687
+    },
+    {
+      "path": "scripts/serve-memory-sea.js",
+      "sha256": "6021788b347a14184e5734b22411c5e68b918c601ccfcacb4ad5664a3bdc790c",
+      "bytes": 3350
+    },
+    {
+      "path": "scripts/set-module-version.js",
+      "sha256": "d45a17e95e53de125b333d4b357e35833b3d924f0fb1f3b01deca54381e54138",
+      "bytes": 670
+    },
+    {
+      "path": "scripts/stop-memory-sea.ps1",
+      "sha256": "c5d4dcfbfe166db4d4c62584da52732126d78cc70b279196cb6f42877afe99a5",
+      "bytes": 1867
+    },
+    {
+      "path": "scripts/update-aurabot-module.js",
+      "sha256": "99df6c890605d175e3569761619d9402487893d218fec0b0238fefacf8ce7934",
+      "bytes": 2696
+    },
+    {
+      "path": "server/memory-sea-handler.js",
+      "sha256": "dbca3bd6d08eb74795d0d68075d1b41a8e45dba27b5677282f1e919f3fd60322",
+      "bytes": 15415
+    },
+    {
+      "path": "shared/v5-memory-layout.js",
+      "sha256": "9a8b5a4b25ee1564f463c207a319c22deefbe0f49a73d7c1bc0afcd87f168588",
+      "bytes": 1965
+    },
+    {
+      "path": "test/aurabot-activity.test.js",
+      "sha256": "1808a40c520b5092301c29ef12a8b6ec528a9ef4a5588a4e30b1bce7a8bf1c46",
+      "bytes": 2761
+    },
+    {
+      "path": "test/aurabot-adapter.test.js",
+      "sha256": "1e56f90151d8964cc6dd022ba7e3f15e759462ff15cd4512dc4085f6ed39b4d4",
+      "bytes": 15317
+    },
+    {
+      "path": "test/aurabot-context-coordination.test.js",
+      "sha256": "ec62a2a9fa164484db3ac6fb24fbc1b452c089e4da7c23186734ee62f98d5db2",
+      "bytes": 5901
+    },
+    {
+      "path": "test/aurabot-context-monitor.test.js",
+      "sha256": "78c05fc62dfb46f1fbd5f78eb6f115e40804fcff5ba3ad6b2bd74056b01a1e1c",
+      "bytes": 8641
+    },
+    {
+      "path": "test/aurabot-module.test.js",
+      "sha256": "1b9340a0444d8a865d59d04f28600ceee00a53faa9725f988351d9c6d0059715",
+      "bytes": 20216
+    },
+    {
+      "path": "test/file-store.test.js",
+      "sha256": "af42ef2d3225311463151bc7b240e963ba77eecc1d6727c8f629b5eca90f2c8b",
+      "bytes": 3967
+    },
+    {
+      "path": "test/launcher.test.js",
+      "sha256": "5c0462c3ac30a0427ff19da1d66f932bc8c895a0f77448973450d62405a0e60c",
+      "bytes": 3497
+    },
+    {
+      "path": "test/memory-core.test.js",
+      "sha256": "d98ef0b1f4a3e070d8a30015e317c3474b480ff25443b6b9ca2baa4baf745052",
+      "bytes": 21029
+    },
+    {
+      "path": "test/memory-sea.test.js",
+      "sha256": "45856a815e9a14d1f41b2ca7eca166123f1cb1ae36aba6705ea30e65da0dbe99",
+      "bytes": 9603
+    },
+    {
+      "path": "test/v5-archive.test.js",
+      "sha256": "cd65586adb3de72c92812eaa3c971f1074c0c94907831859d779d15aa3954ef8",
+      "bytes": 10341
+    },
+    {
+      "path": "test/v5-atlas-rendering.test.js",
+      "sha256": "dacc5b5d37309f2eae25b3894021d3aaf4ecca67554d0d955e32d2f7cd60de99",
+      "bytes": 3850
+    },
+    {
+      "path": "test/v5-background.test.js",
+      "sha256": "37ca1a7bf73389043fe435e18c3cb831e2ddd24f7e8749aa63c1a94096b51356",
+      "bytes": 11983
+    },
+    {
+      "path": "test/v5-brain-mist.test.js",
+      "sha256": "6100f9f2d9dcb4a410ec3381c1ca13c530d5abb14203fdbde3d7e1738e02b874",
+      "bytes": 8405
+    },
+    {
+      "path": "test/v5-dialogue-learning.test.js",
+      "sha256": "6566cbee46b2933866fe363883d20d8a0fcc92a3bb421f29ab52b2054787f1d8",
+      "bytes": 10560
+    },
+    {
+      "path": "test/v5-evidence-backtrace.test.js",
+      "sha256": "fb0037bcd383dcf9a024b2f08c6e83f06e6ffd597cea33e9522a6140feb083c6",
+      "bytes": 4147
+    },
+    {
+      "path": "test/v5-glb.test.js",
+      "sha256": "8d3f0df79d40a49b0badaa9c8ec8caf90350d69956a66f9768764a02520b25a8",
+      "bytes": 16690
+    },
+    {
+      "path": "test/v5-load-performance.test.js",
+      "sha256": "8bd19e81bd324adaa2cd44538ef91a275b1c3b25e1e0f6dbb2afcf7cfb55d421",
+      "bytes": 5332
+    },
+    {
+      "path": "test/v5-memory-system.test.js",
+      "sha256": "eb6d37f7628d6929b18ae4a9657951459c1b789827a204b0c2a7707fe89fdfb7",
+      "bytes": 13959
+    },
+    {
+      "path": "test/v5-model.test.js",
+      "sha256": "1bb0538e1a5c6d06a96a63c3e2787f0cdf9efb837fdb3c82681419739e4b77c4",
+      "bytes": 8436
+    },
+    {
+      "path": "test/v5-module-entry.test.js",
+      "sha256": "acd2d0531fe1bd124fbb4cb2c58816eb61503e4253f25a4bdcba0b754ac81759",
+      "bytes": 5669
+    },
+    {
+      "path": "test/v5-performance.test.js",
+      "sha256": "4b8bb26015b403d77bd020377e8452176034d5e548dd1271b153d73416f329da",
+      "bytes": 5503
+    },
+    {
+      "path": "test/v5-reference-improvements.test.js",
+      "sha256": "615c930a5ef249d288839577fe3712d04ece2cf514e0d83391b9953c53159241",
+      "bytes": 4495
+    },
+    {
+      "path": "test/v5-runtime.test.js",
+      "sha256": "852e81b365184dd09db4736f1438f1795ad796de93fa1ab486b0696a6351db94",
+      "bytes": 23700
+    },
+    {
+      "path": "test/v5-spatial.test.js",
+      "sha256": "3df117b66d2583ded7edf6b7a66be8f3fbee4013fd8381b125a9c91d165de01b",
+      "bytes": 2864
+    },
+    {
+      "path": "test/v5-storage-optimization.test.js",
+      "sha256": "2ccf6f2092c3cc732582785ffc85314342e2eb806771625ca7365032235da1cf",
+      "bytes": 6440
+    },
+    {
+      "path": "test/v5-trash.test.js",
+      "sha256": "a5a3a75e7c99a2321630091e89f058ee6b0816bcde1099fe267c175236bde5d8",
+      "bytes": 7959
+    },
+    {
+      "path": "停止星图服务.vbs",
+      "sha256": "b8457c40f384e4ce9090872714a6370b6c402c2eefcbc4deb3093bcc16ae1f2d",
+      "bytes": 842
+    },
+    {
+      "path": "启动星图.cmd",
+      "sha256": "421bf610d49392752830bd0a992e9b88a62b7abc7b11b127de29afdc01173997",
+      "bytes": 186
+    },
+    {
+      "path": "启动星图.vbs",
+      "sha256": "a239c52dc828ea55f8f27abea3cad6eba5d50fa77bda5cb25cbd904e00f7dd2c",
+      "bytes": 3220
+    },
+    {
+      "path": "打包Aurabot模块.cmd",
+      "sha256": "c1fcdd39853773ba65d7010774b64c475b3032ae85a844df1903f3a47c9084d4",
+      "bytes": 194
+    },
+    {
+      "path": "诊断启动星图.cmd",
+      "sha256": "26fbdecea4a95769ee0911695836412b2ede4517c9e355263ada0f63734545e9",
+      "bytes": 106
+    },
+    {
+      "path": "配置模型密钥.cmd",
+      "sha256": "36ec018a7207344924940a5ae0114de26c2080fddba4725765358620363d25b3",
+      "bytes": 826
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { openJsonFileStore } from '../adapters/json-file-store.js';
+import { MemoryService } from '../core/memory-service.js';
+import { projectGraph } from '../core/graph-projector.js';
+import { applyDemo, BEFORE_CORRECTION, DEMO_CONTEXT } from '../fixtures/memory-sea-demo.js';
+
+const root = new URL('../runtime-data/', import.meta.url);
+let at = 0;
+const store = openJsonFileStore(fileURLToPath(new URL('demo-store.json', root)), { clock: () => at });
+const memory = new MemoryService(store);
+const receipts = applyDemo(memory, { beforeStep: (step) => { at = step.at; } });
+const before = memory.getMemory(DEMO_CONTEXT, 'mem:node-budget', { as_of: BEFORE_CORRECTION });
+const current = memory.getDetails(DEMO_CONTEXT, 'mem:node-budget');
+const graph = projectGraph(store.readSnapshot(DEMO_CONTEXT), { include_sources: true });
+const output = { dataset_kind: 'synthetic', notice: '全部为合成示例；未运行实际性能测试，也未连接 Aurabot。', ...graph };
+mkdirSync(root, { recursive: true });
+writeFileSync(new URL('demo-graph.json', root), JSON.stringify(output, null, 2) + '\n', 'utf8');
+console.log('Thinkstar 核心演示（全部为合成数据）');
+console.log(`纠正前：${before.label}；现在：${current.memory.label}（版本 ${current.memory.revision}）`);
+console.log(`相关理解：${memory.getMemory(DEMO_CONTEXT, 'mem:budget-note').review_status === 'needs_review' ? '待复核' : '已核对'}`);
+console.log(`五区图：${graph.counts.unique_objects} 个唯一记忆，${graph.counts.projections} 个入口投影，10 个星区 + U`);
+console.log(`未完事项：${memory.listOpenLoops(DEMO_CONTEXT).map((item) => item.label).join('；')}`);
+console.log(`提交 ${receipts.filter((item) => !item.replayed).length} 次，幂等重放 ${receipts.filter((item) => item.replayed).length} 次`);
+console.log(`图数据：${fileURLToPath(new URL('demo-graph.json', root))}`);

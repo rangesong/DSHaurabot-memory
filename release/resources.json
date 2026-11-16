@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "version": "1.0.0",
+  "file": "blue-maid-starry.glb",
+  "sha256": "cb9d651dc1926a122fb72008cc79954858571362f5bcbc4b7ce148abf726e583",
+  "license": "User-supplied private resource; no redistribution licence granted by Thinkstar",
+  "install_relative": "modules-data/thinkstar-memory/assets"
+}
