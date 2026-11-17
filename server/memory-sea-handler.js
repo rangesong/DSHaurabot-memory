@@ -1,6 +1,7 @@
 import { readFileSync,existsSync,statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
+import {recallPresentation} from '../core/v5-recall-presentation.js';
 import {consoleLayout,regionContents,diagnostics} from '../core/v5-console.js';
 const root=fileURLToPath(new URL('../',import.meta.url));
 const defaultApp=resolve(root,'apps/memory-sea');
@@ -16,7 +17,7 @@ export const ATLAS_STATIC = new Map([
 
 export const ATLAS_API_ROUTES=['trash-detail','trash-list','trash-restore','memory-discard','evaluation-run','evaluation-report','archive-export','context-report','fact-index','fact-write','fact-restore','archive-index','archive-read','archive-build','remember-source','person-memory','overview','model-status','graph','central-rules','directory','detail','events','trace','config','recalls','governance','model-check','semantic-extract','model-chat','model-review','model-display-ack','ingest','query','associate','principle','central-rule','deepen','revise','feedback','method-outcome','outcome','rollback-config','retention-plan','retention-apply','consolidate','live-poll'];
 
-ATLAS_API_ROUTES.push('console-layout','console-region','console-impressions','console-activity','console-diagnostics','dialogue-feedback','dialogue-review','semantic-status','semantic-index','self-reflections');
+ATLAS_API_ROUTES.push('console-layout','console-region','console-impressions','console-activity','console-diagnostics','dialogue-feedback','dialogue-review','semantic-status','semantic-index','self-reflections','strategy-trials','strategy-revoke');
 
 /** Standalone loopback checks remain enabled unless a host mounts EVERY route behind its panel gate. */
 export function createMemorySeaHandler({app=defaultApp,provider=null,runtime=null,liveReader=null,modelService=null,evaluationService=null,basePath='',hosted=false,integration=null,assetOverrides={},assertActive=()=>{},assertMutationAllowed=()=>{},signal=null,transformHtml=value=>value}={}) {
@@ -50,6 +51,7 @@ export function createMemorySeaHandler({app=defaultApp,provider=null,runtime=nul
           if(route==='console-activity')return send(200,runtime.dialogue.list({...params,category:'interaction'}));
           if(route==='console-diagnostics')return send(200,diagnostics(runtime,params));
           if(route==='dialogue-feedback')return send(200,runtime.dialogue.feedbackList(params));
+          if(route==='strategy-trials')return send(200,runtime.strategyLearning.list(params));
           if(route==='self-reflections')return send(200,runtime.selfReflection.list(params));
           if(route==='semantic-status')return send(200,runtime.semantic.status());
           if(route==='overview'){const overview=runtime.overview(),model=modelService?.status()??null;return send(200,{...overview,capabilities:{...overview.capabilities,semantic_model:!!model?.configured,actual_model_context_window:integration?.context_window??'local_pool_estimate_no_external_host_adapter'},model,integration});}
@@ -78,7 +80,7 @@ export function createMemorySeaHandler({app=defaultApp,provider=null,runtime=nul
           }
           if(route==='trace')return send(200,runtime.trace(p.get('id')));
           if(route==='config')return send(200,runtime.getConfig());
-          if(route==='recalls'){runtime.requireScope(params.scope??'all',true);return send(200,{items:runtime.store.recalls(params.scope??'all',20)});}
+          if(route==='recalls'){runtime.requireScope(params.scope??'all',true);return send(200,{items:runtime.store.recalls(params.scope??'all',20).map(recallPresentation)});}
           if(route==='governance')return send(200,runtime.governance());
         }else if(req.method==='POST'){
           if(!String(req.headers['content-type']??'').startsWith('application/json'))return send(415,{error:'JSON_REQUIRED',message:'仅接受本机 JSON 操作'});
@@ -86,6 +88,7 @@ export function createMemorySeaHandler({app=defaultApp,provider=null,runtime=nul
           assertActive();
           let body;try{body=JSON.parse(raw);}catch{return send(400,{error:'INVALID_JSON',message:'JSON 格式不正确'});}
           assertMutationAllowed();
+          if(route==='strategy-revoke')return send(200,runtime.strategyLearning.revoke(body));
           if(route==='semantic-index')return send(200,await runtime.semantic.sync({...body,force:true}));
           if(route==='dialogue-review'){
             const source=runtime.ingest({scope:body.scope,text:'反馈含义核对：'+String(body.reason??''),provenance:{kind:'explicit_feedback',speaker_id:'local:operator'}});

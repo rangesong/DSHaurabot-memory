@@ -106,6 +106,7 @@ export class V5Dialogue {
     this.r.store.sql('INSERT OR IGNORE INTO feedback VALUES(?,?,?)').run(id,scope,JSON.stringify({id,scope,query_id:turn.query_id,kind:'natural_dialogue',source_ref:source.id,created_at:row.created_at,inference:interpretation.inferred,interpretation}));
     this.applyEvidence(row,turn);
     this.activity({id:'feedback:'+id,scope,category:'learning',title:'关联了本次互动反馈',at:now,status:interpretation.inferred?'tentative':'explicit',source_refs:[source.id],detail:{feedback_id:id,turn_id:turn.id,interpretation}});
+    this.r.strategyLearning?.observe(row,turn);
     return row;
   }
   applyEvidence(row,turn){
@@ -137,6 +138,7 @@ export class V5Dialogue {
     }
     row.applied_ids=[];row.applied_changes=[];row.interpretation={...row.interpretation,meaning,effects:reactionEffects(meaning,this.get('dialogue_turns',row.turn_id)),review_pending:false,correction:meaning==='factual_correction',basis:'explicit_interpretation_correction',confidence:1,inferred:false,approval:meaning==='approval',dissatisfied:meaning==='dissatisfaction',dimensions:{...row.interpretation.dimensions,factual:meaning==='factual_correction'?'explicit_correction':meaning==='factual_confirmation'?'user_confirmation':row.interpretation.dimensions.factual,task:meaning==='task_pending'?'user_reported_pending':row.interpretation.dimensions.task,style:meaning==='approval'?'explicit_positive':meaning==='dissatisfaction'?'explicit_negative':'unknown'}};row.revision++;row.corrected_by=source_id;this.save('dialogue_feedback',row);
     for(const m of this.r.store.sql("SELECT json FROM memories WHERE scope=? AND kind='pattern' AND json_extract(json,'$.attributes.dialogue_learning')=1").all(scope).map(x=>this.r.store.decodeMemory(x.json)))if((m.attributes.feedback_ids??[]).includes(id)){m.review='needs_review';m.revision++;this.r.store.putMemory(m);}
+    this.r.strategyLearning?.reconcile(scope);
     return row;
   }
   consolidate({allowSource=()=>true}={}){
@@ -203,7 +205,7 @@ export class V5Dialogue {
     const rows=this.r.store.sql("SELECT json FROM dialogue_feedback WHERE (?='all' OR scope=?) AND (?=1 OR json_extract(json,'$.status')='active') ORDER BY created DESC LIMIT ? OFFSET ?").all(scope,scope,include_inactive===true||include_inactive==='1'?1:0,limit+1,offset).map(row=>JSON.parse(row.json));
     return {items:rows.slice(0,limit).filter(row=>this.r.store.getSource(row.source_ref)).map(row=>({...row,context:{query:short(this.get('dialogue_turns',row.turn_id)?.query,400),reply:short(this.get('dialogue_turns',row.turn_id)?.reply,700)},review_status:row.interpretation.basis==='media_description_missing'?'缺少表情描述':row.interpretation.review_pending?'等待语境复核（受每日额度限制）':row.model_review?'已做语境复核，解释仍可修订':'本地已识别',interpretation:{...row.interpretation,label:(row.interpretation.inferred&&row.interpretation.meaning!=='unknown'?'暂定：':'')+(FEEDBACK_LABELS[row.interpretation.meaning]??'待理解')}})),has_more:rows.length>limit,next_offset:offset+Math.min(rows.length,limit)};
   }
-  strategy(scope,query,{memory_filter=()=>true,source_filter=()=>true}={}){
+  strategy(scope,query,{memory_filter=()=>true,source_filter=()=>true,skip_learning=false}={}){
     const rules=this.r.resolveRules(scope,query).filter(memory_filter),base={...this.r.config.W4},appraisal=this.r.appraise(query,[],true,scope),ruleIds=rules.map(m=>m.id),notes=[];
     for(const m of rules.filter(m=>m.attributes.central_rule.region==='W4'))base[m.attributes.central_rule.param]=m.attributes.central_rule.value;
     let controls={...base};const q=normalize(query);
@@ -224,16 +226,19 @@ export class V5Dialogue {
     if(weak.length>=(this.r.config.W3.implicit_min_evidence??3)){const delta=Math.min(this.r.config.W3.learning_step_cap,this.r.config.W3.feedback_learning_rate*this.r.config.W5.learning_rate*weak.length*.25);if(weak.filter(x=>['affection','approval'].includes(x.row.interpretation.meaning)).length>=this.r.config.W3.implicit_min_evidence)controls.style_accommodation=bounded(controls.style_accommodation+delta);notes.push('多次同情境的互动提供了较弱的表达依据；不据此判断事实正确。');for(const effect of unique(weak.flatMap(x=>x.row.interpretation.effects??[])))if(EFFECT_TEXT[effect])notes.push(EFFECT_TEXT[effect]);}
     if(negative.length){const delta=Math.min(this.r.config.W3.learning_step_cap,this.r.config.W3.feedback_learning_rate*this.r.config.W5.learning_rate*negative.length);if(negative.some(x=>/追问|问太多/.test(x.row.text)))controls.followup_pressure=bounded(controls.followup_pressure-delta);if(negative.some(x=>/啰嗦|说太多|太长/.test(x.row.text)))controls.detail_level=bounded(controls.detail_level-delta);notes.push('参考同情境的明确表达纠正，小幅调整并保留回退依据。');}
     for(const {row}of specific.slice(0,2)){for(const effect of row.interpretation.effects??[])if(EFFECT_TEXT[effect])notes.push(EFFECT_TEXT[effect]);notes.push('相关用户原话（仅是历史依据）：'+short(row.text,140));}
+    const experiment=skip_learning?{ids:[],notes:[]}:this.r.strategyLearning.apply(scope,query,controls,{allowSource:source_filter});
     // Known explicit preference text is grounded; affection never makes a fact more credible.
     const patterns=this.r.store.sql("SELECT json FROM memories WHERE scope=? AND kind='pattern' AND validity='current' AND layer!='forgotten' ORDER BY updated DESC LIMIT 80").all(scope).map(x=>this.r.store.decodeMemory(x.json));
     const valid=patterns.filter(m=>m.review!=='needs_review'&&m.source_refs.length&&m.source_refs.every(id=>this.r.store.getSource(id))&&memory_filter(m)&&conditionMatches(m.attributes.trigger_condition??'',q));
     for(const m of valid.slice(0,this.r.config.W3.emotion_context_limit)){const body=this.r.body(m)??'';if(/少追问|不(?:要)?(?:连续)?追问|不想聊|安静陪/.test(body)){controls.followup_pressure=0;notes.push(short(body,100));ruleIds.push(m.id);}if(/简短|简洁|少说/.test(body)){controls.detail_level=Math.min(controls.detail_level,.25);ruleIds.push(m.id);}}
     if(/详细分析|详细解释|展开讲|仔细分析/.test(q))controls.detail_level=Math.max(.8,controls.detail_level);
+    experiment.ids=experiment.ids.filter(id=>{const trial=this.r.strategyLearning.get(id);return controls[trial.param]===trial.value;});
+    if(experiment.ids.length)notes.push(...experiment.notes);
     const changed=Object.keys(controls).some(k=>controls[k]!==this.r.config.W4[k]);
     const labels=[controls.detail_level<=.25?'表达简洁':controls.detail_level>=.75?'充分说明必要细节':null,controls.followup_pressure<=.15?'减少追问':null,controls.style_accommodation>=.65?'适当贴近用户表达方式':null];
-    if(!changed&&!notes.length&&!ruleIds.length)return {controls,rule_ids:[],feedback_ids:[],appraisal,text:''};
+    if(!changed&&!notes.length&&!ruleIds.length)return {controls,experiment_ids:[],rule_ids:[],feedback_ids:[],appraisal,text:''};
     const text='本轮互动建议（不替代当前要求及事实依据）：'+unique([...labels.filter(Boolean),...notes]).join('；')+'。';
-    return {controls,rule_ids:unique(ruleIds),feedback_ids:unique([...learned,...(weak.length>=this.r.config.W3.implicit_min_evidence?weak:[]),...negative,...specific].map(x=>x.row.id)),appraisal,text};
+    return {controls,experiment_ids:experiment.ids,rule_ids:unique(ruleIds),feedback_ids:unique([...learned,...(weak.length>=this.r.config.W3.implicit_min_evidence?weak:[]),...negative,...specific].map(x=>x.row.id)),appraisal,text};
   }
   impressions({scope='all',limit=30,offset=0}={}){
     this.r.requireScope(scope,true);const rows=this.r.store.sql("SELECT json FROM memories WHERE kind='pattern' AND layer!='forgotten' AND validity='current'"+(scope==='all'?'':' AND scope=?')+' ORDER BY updated DESC LIMIT ? OFFSET ?').all(...(scope==='all'?[]:[scope]),Math.min(80,Number(limit)||30)+1,Math.max(0,Number(offset)||0)).map(row=>this.r.store.decodeMemory(row.json));

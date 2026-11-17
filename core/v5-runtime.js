@@ -16,6 +16,7 @@ import { PARAM_HELP } from './v5-param-help.js';
 import { centralRules,proposeCentralRule,writeCentralRule,resolveCentralRules,centralRuleStatus } from './v5-rules.js';
 import { V5Dialogue } from './v5-dialogue.js';
 import { V5Semantic } from './v5-semantic.js';
+import {V5StrategyLearning} from './v5-strategy-learning.js';
 import {V5SelfReflection} from './v5-self-reflection.js';
 
 const clone=structuredClone, now=()=>Date.now(), short=(s,n=48)=>Array.from(s??'').slice(0,n).join('');
@@ -35,7 +36,7 @@ export class V5Runtime {
   constructor({file=':memory:',clock=now,onEvent=()=>{}}={}) {
     this.store=new V5Store(file);this.clock=clock;this.onEvent=onEvent;this.processing=false;
     const saved=this.store.meta('effective_config',DEFAULT_CONFIG);this.config=Object.fromEntries(Object.entries(DEFAULT_CONFIG).map(([key,defaults])=>[key,{...defaults,...saved[key]}]));this.configVersion=this.store.meta('config_version',1);
-    this.archive=new V5Archive(this);this.trash=new V5Trash(this);this.dialogue=new V5Dialogue(this);this.semantic=new V5Semantic(this);this.selfReflection=new V5SelfReflection(this);
+    this.archive=new V5Archive(this);this.trash=new V5Trash(this);this.dialogue=new V5Dialogue(this);this.semantic=new V5Semantic(this);this.selfReflection=new V5SelfReflection(this);this.strategyLearning=new V5StrategyLearning(this);
     const pendingErasure=this.store.meta('trash-erasure-pending',[]);if(pendingErasure.length){this.trash.purgeSources(pendingErasure);this.store.setMeta('trash-erasure-pending',[]);}
     this.live={enabled:false,status:'stopped',last_poll:null,last_change:null,source_access:'read_only',errors:[],new_messages:0};
     this.store.db.exec("UPDATE jobs SET status='retry' WHERE status='running'");
@@ -415,7 +416,7 @@ export class V5Runtime {
       for(const row of this.store.sql('SELECT json FROM recalls').all()){const recall=JSON.parse(row.json);if(affected.has(recall.scope)){recall.context=[];recall.query='（明确删除后不再保留关联检索文字）';recall.candidates=[];if(recall.output)recall.output.text='相关来源已明确删除';this.store.recall(recall);}}
     });
     for(const scope of affected){this.rebuildCatalogs(scope);const run=this.beginRun(scope,'privacy_erasure');this.event(run,'W5','U','明确删除来源及依赖摘要，原文归档也不保留',{count:ids.size,extra:{reason}});for(const star of erasedStars.filter(star=>star.scope===scope))this.event(run,'W5','U','明确删除对应星点',{extra:{memory_id:star.id,from_layer:star.layer,to_layer:'forgotten',meteor:true}});this.endRun(run);}
-    this.dialogue.eraseScopes(affected);this.selfReflection.eraseScopes(affected);this.semantic.erase(memories);if(this.store.fts)for(const id of memories){this.store.sql('DELETE FROM lookup_fts WHERE id=?').run(id);this.store.sql('DELETE FROM lookup_fts_done WHERE id=?').run(id);}
+    this.strategyLearning.eraseScopes(affected);this.dialogue.eraseScopes(affected);this.selfReflection.eraseScopes(affected);this.semantic.erase(memories);if(this.store.fts)for(const id of memories){this.store.sql('DELETE FROM lookup_fts WHERE id=?').run(id);this.store.sql('DELETE FROM lookup_fts_done WHERE id=?').run(id);}
     this.store.tx(()=>this.store.codec.prune());return {erased:ids.size,affected:[...affected]};
   }
   discardMemory({scope,id,expected_revision,reason}={}){

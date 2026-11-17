@@ -210,7 +210,7 @@ export async function startThinkstar(api){
   }
   const compat=memoryCompatibility(api,{enabled:()=>available(),record:mirrorRecord,invalidate:invalidateMirror,erase:eraseMirrors,discard:discardMirrors,read:(...args)=>coordinator.observe(...args),onDetach:()=>coordinator.clear(),onError:noteError});
   let coordinationSince=runtime.store.meta('host_context_coordinator_since');if(!coordinationSince){coordinationSince=Date.now();runtime.store.setMeta('host_context_coordinator_since',coordinationSince);}
-  function recall(chat,query,{recentMessages=[],availableTokens=null,sessionId=null,content=[],semantic_ids=[],rerank_ids=[],strategy=null}={}){
+  function recall(chat,query,{recentMessages=[],availableTokens=null,sessionId=null,content=[],semantic_ids=[],rerank_ids=[],strategy=null,origin='prompt'}={}){
     const chatId=cleanId(chat?.chatId);
     if(!allowedChat(chatId))return null;
     const scope=runtime.addScope(context(chatId));
@@ -225,7 +225,7 @@ export async function startThinkstar(api){
     if(strategy.text&&strategyCost<=sizing.available)result.dialogue_strategy=strategy;
     // A module allocation is known; the host's COMPLETE remaining window is usually not exposed.
     result.budget.actual_model_window_known=false;result.budget.host_sizing=sizing;
-    result.request_inclusion='prepared_at_module_hook';result.actual_use='unknown';result.model_actual_use='unknown';
+    result.recall_origin=origin;result.request_inclusion='prepared_at_module_hook';result.actual_use='unknown';result.model_actual_use='unknown';
     runtime.store.recall(result);return result;
   }
   function evidenceText(result){
@@ -325,7 +325,7 @@ export async function startThinkstar(api){
       if(!available()||settings().mode!=='active'||!allowedChat(cleanId(chat?.chatId)))return [];
       const boundPersona=persona(),guard=fn=>async args=>{if(!active||settings().mode!=='active'||persona()!==boundPersona)return {ok:false,message:'模块或人格已改变，请刷新聊天工具。'};return fn(args);};
       return [
-        api.defineTool({name:'thinkstar_recall',description:'查询同人格同聊天的记忆证据；精确细节再用 thinkstar_history 逐级读取。',properties:{query:{type:'string'}},required:['query'],execute:guard(({query})=>{const result=recall(chat,query);return {ok:true,message:result?evidenceText(result)||'未找到预算内的匹配；可查历史原文，不能断言从未发生。':'此聊天未开放召回。'};})}),
+        api.defineTool({name:'thinkstar_recall',description:'查询同人格同聊天的记忆证据；精确细节再用 thinkstar_history 逐级读取。',properties:{query:{type:'string'}},required:['query'],execute:guard(({query})=>{const result=recall(chat,query,{origin:'tool'});if(result){result.request_inclusion='returned_to_host_tool';runtime.store.recall(result);}return {ok:true,message:result?evidenceText(result)||'未找到预算内的匹配；可查历史原文，不能断言从未发生。':'此聊天未开放召回。'};})}),
         api.defineTool({name:'thinkstar_history',description:'同人格同聊天三层查档：level=2月印象，1日摘要，0原话；先目录后按日期和关键词分页读原文。摘要缺失仍可读L0。',properties:{level:{type:'integer',enum:[0,1,2]},day:{type:'string'},month:{type:'string'},keyword:{type:'string'},offset:{type:'integer',minimum:0},limit:{type:'integer',minimum:1,maximum:40}},required:['level'],execute:guard(args=>({ok:true,...readHistory(chat,{...args,limit:Math.min(40,Math.max(1,Number(args.limit)||12))})}))}),
         api.defineTool({name:'thinkstar_remember',description:'精确引用 thinkstar_history 返回的用户原话记事，不能编造证据或把别人的话记成本人事实。',properties:{source_id:{type:'string'},quote:{type:'string'}},required:['source_id','quote'],execute:guard(args=>({ok:true,memory_id:remember(chat,args).memory.id}))}),
         api.defineTool({name:'thinkstar_person',description:'查看当前聊天中有来源的人物记忆；关系或印象不是已证实事实。',properties:{uid:{type:'string'}},execute:guard(({uid})=>({ok:true,items:exports.lookupPerson(chat,uid)}))}),

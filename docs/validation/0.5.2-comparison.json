@@ -1,0 +1,89 @@
+{
+  "verification": "isolated synthetic dialogue, deterministic model fixture; not live QQ or real model quality proof",
+  "baseline": {
+    "historical_2000_trial_latency_ms": null,
+    "automatic_trial_applied": false,
+    "after_positive_feedback": "not_implemented",
+    "after_negative_feedback": "not_implemented",
+    "original_unchanged": true,
+    "original_recalled": true,
+    "untranslated_unknown_labels": 3,
+    "reflection_model_calls": 1,
+    "additional_learning_model_calls": 0,
+    "host_messages_sent": 0,
+    "active_strategy_latency_ms": {
+      "median": 0.08629999999999427,
+      "p95": 0.15269999999999584
+    },
+    "strategy_latency_ms": {
+      "median": 0.31819999999999027,
+      "p95": 0.41720000000000823
+    },
+    "database_bytes": 1155072
+  },
+  "iteration_one": {
+    "historical_2000_trial_latency_ms": {
+      "median": 2.3969999999999914,
+      "p95": 2.6316000000000486
+    },
+    "automatic_trial_applied": true,
+    "after_positive_feedback": "verified",
+    "after_negative_feedback": "rolled_back",
+    "original_unchanged": true,
+    "original_recalled": true,
+    "untranslated_unknown_labels": 0,
+    "reflection_model_calls": 1,
+    "additional_learning_model_calls": 0,
+    "host_messages_sent": 0,
+    "active_strategy_latency_ms": {
+      "median": 0.1530999999999949,
+      "p95": 0.2598999999999876
+    },
+    "strategy_latency_ms": {
+      "median": 0.3586999999999989,
+      "p95": 0.46800000000001774
+    },
+    "database_bytes": 1867776
+  },
+  "final": {
+    "historical_2000_trial_latency_ms": {
+      "median": 0.987700000000018,
+      "p95": 1.13839999999999
+    },
+    "automatic_trial_applied": true,
+    "after_positive_feedback": "verified",
+    "after_negative_feedback": "rolled_back",
+    "original_unchanged": true,
+    "original_recalled": true,
+    "untranslated_unknown_labels": 0,
+    "reflection_model_calls": 1,
+    "additional_learning_model_calls": 0,
+    "host_messages_sent": 0,
+    "active_strategy_latency_ms": {
+      "median": 0.14580000000000837,
+      "p95": 0.28890000000001237
+    },
+    "strategy_latency_ms": {
+      "median": 0.33459999999996626,
+      "p95": 0.41960000000000264
+    },
+    "database_bytes": 2035712
+  },
+  "panel": [
+    {
+      "version": "../baseline-project",
+      "requests_after_scope_change": 1,
+      "new_scope_started": false
+    },
+    {
+      "version": "../iteration-one",
+      "requests_after_scope_change": 1,
+      "new_scope_started": false
+    },
+    {
+      "version": ".",
+      "requests_after_scope_change": 2,
+      "new_scope_started": true
+    }
+  ]
+}

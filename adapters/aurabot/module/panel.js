@@ -18,6 +18,7 @@ function sectionTitle(title){
 }
 function NightReflection({settings,save,scope,layout,changed,toast}){
  const [enabled,setEnabled]=useState(settings.nightReflectionEnabled===true),[busy,setBusy]=useState(false);
+ useEffect(()=>setEnabled(settings.nightReflectionEnabled===true),[settings.nightReflectionEnabled]);
  return h('div',null,h('p',null,'凌晨整理完成后，大肥鱼回顾今天、问问自己想做什么和想看什么，再通过宿主工具完成选中的阅读或小任务，记录实际结果与待验证的认识。'),
  h('label',{style:{display:'flex',alignItems:'center',gap:9,margin:'12px 0'}},h('input',{type:'checkbox',role:'switch','aria-label':'夜间自省与行动开关',checked:enabled,disabled:busy,onChange:async e=>{const value=e.target.checked;setBusy(true);try{await save({nightReflectionEnabled:value});setEnabled(value);}catch(err){toast(err.message);}finally{setBusy(false);}}}),'开启夜间自省与行动'),
  h('p',{className:'ab-small ab-muted'},'总开关和DSH模型调用需要同时开启。按北京时间每天整理前一天资料；按设定频次分轮执行，重启不会重复同一轮。'),
@@ -33,10 +34,10 @@ function Fold({title,children,onOpen,style={},reveal=null}){
     h('summary',{style:{cursor:'pointer',fontWeight:600}},sectionTitle(title)),open?h('div',{style:{marginTop:12,minWidth:0}},children):null);
 }
 function LazyList({name,scope,params={},render,interval=0}){
-  const [data,setData]=useState(null),[offset,setOffset]=useState(0),[error,setError]=useState(''),[refresh,setRefresh]=useState(0),pending=useRef(false);
+  const [data,setData]=useState(null),[offset,setOffset]=useState(0),[error,setError]=useState(''),[refresh,setRefresh]=useState(0);
   const key=JSON.stringify(params);
   useEffect(()=>{setOffset(0);setData(null);},[scope,key]);
-  useEffect(()=>{let live=true;const load=()=>{if(pending.current)return;pending.current=true;read(name,{scope,offset,limit:20,...JSON.parse(key)}).then(v=>{if(live){setData(v);setError('');}}).catch(e=>{if(live)setError(e.message);}).finally(()=>{pending.current=false;});};load();const timer=interval?setInterval(load,interval):null;return()=>{live=false;if(timer)clearInterval(timer);};},[name,scope,key,offset,refresh,interval]);
+  useEffect(()=>{let live=true,pending=false;const load=()=>{if(pending)return;pending=true;read(name,{scope,offset,limit:20,...JSON.parse(key)}).then(v=>{if(live){setData(v);setError('');}}).catch(e=>{if(live)setError(e.message);}).finally(()=>{pending=false;});};load();const timer=interval?setInterval(load,interval):null;return()=>{live=false;if(timer)clearInterval(timer);};},[name,scope,key,offset,refresh,interval]);
   return h('div',null,error?h('p',{className:'ab-note'},error):null,!data?h('p',{className:'ab-muted'},'正在读取…'):h(React.Fragment,null,
     ...(data.items??[]).map(item=>h('div',{key:item.id,style:{padding:'10px 0',borderBottom:'1px solid #263548',overflowWrap:'anywhere'}},render(item))),
     !(data.items??[]).length?h('p',{className:'ab-muted'},'当前范围暂无记录。'):null,
@@ -115,6 +116,7 @@ return function ThinkstarPanel({settings={},save=async()=>{},toast}){
     h(Fold,{title:'反馈与学习',onOpen:load},selector,h('p',null,'结合具体回复理解自然反馈，保留依据；解释被纠正后可撤回相关调整。'),
       h(Fold,{title:'反馈理解与修订'},h(LazyList,{name:'dialogue-feedback',scope,render:item=>h(FeedbackReview,{item,toast})})),
       h(Fold,{title:'分类与关联历史'},h(LazyList,{name:'dialogue-feedback',scope,params:{include_inactive:'1'},render:item=>h(Fold,{title:when(item.occurred_at)+' · '+item.text.slice(0,55)},h('p',null,'分类状态：'+({active:'有效反馈',not_feedback:'普通对话，已排除',unlinked:'原轮次关联需核对'}[item.status]??item.status)),h('p',null,item.interpretation.label),json(item.history))})),
+      h(Fold,{title:'自省策略与效果验证'},h('p',null,'自省发现问题 → 条件回放 → 小幅试用 → 后续反馈验证；效果变差自动撤回。回放通过不代表真实回复已经改善。'),h(LazyList,{name:'strategy-trials',scope,render:item=>h(Fold,{title:when(item.created_at)+' · '+item.problem},h('p',null,item.status_label),h('p',null,'适用情境：'+item.condition+'；'+({detail_level:'回答细致度',followup_pressure:'追问压力'}[item.param]??'表达参数')+'：'+item.baseline+' → '+item.value),h('p',null,'后续明确反馈：'+item.outcomes.length+'次'),h(ui.Btn,{small:true,onClick:async()=>{try{await write('strategy-revoke',{scope:item.scope,id:item.id});toast('已撤回，请重新展开查看记录');}catch(e){toast(e.message);}}},'撤回此策略'),h(Fold,{title:'依据与验证记录'},json({replay:item.replay,outcomes:item.outcomes,history:item.history})))}),layout?h(ParameterEditor,{region:'W5',keys:['self_strategy_enabled','strategy_min_evidence','strategy_trial_feedback'],defaults:layout.defaults,onSaved:changed,toast}):null),
       h(Fold,{title:'学习参数'},layout?h(ParameterEditor,{region:'W3',keys:['feedback_learning_rate','implicit_min_evidence','feedback_window_minutes','learning_step_cap','feedback_immediate_review'],defaults:layout.defaults,onSaved:changed,toast}):null),
       h(Fold,{title:'后台复核与夜间归纳'},h('p',null,'当前互动的后台复核不阻塞聊天；与夜间归纳共用每日调用上限。批量记忆整理仍在夜间。'),layout?h(ParameterEditor,{region:'W5',keys:['learning_rate','feedback_model_calls'],defaults:layout.defaults,onSaved:changed,toast}):null)),
     h(Fold,{title:'向量检索',onOpen:load},h('p',null,'用本机文本语义模型寻找换了说法的旧事，与关键词、人物和原话依据共同检索。新内容保留原话，批量索引在夜间建立。'),
@@ -124,7 +126,7 @@ return function ThinkstarPanel({settings={},save=async()=>{},toast}){
       h(Fold,{title:'联想参数'},layout?h(ParameterEditor,{region:'W2',keys:['recall_depth','association_breadth','hop_decay','association_weight'],defaults:layout.defaults,onSaved:changed,toast}):null),
       h(Fold,{title:'召回与重排参数'},layout?h(ParameterEditor,{region:'W2',keys:['recall_items','candidate_limit','rerank_enabled','rerank_top_n','rerank_timeout_ms'],defaults:layout.defaults,onSaved:changed,toast}):null)),
     h(Fold,{title:'最近活动',onOpen:load},selector,h(LazyList,{name:'console-activity',scope,render:item=>h(Fold,{title:when(item.created_at)+' · '+item.title},h('p',null,item.detail.text),h('p',{className:'ab-small ab-muted'},item.detail.chat_id+' · '+item.status))})),
-    h(Fold,{title:'最近想起了什么',onOpen:load},selector,h(LazyList,{name:'recalls',scope,render:item=>h(Fold,{title:when(item.created_at)+' · '+(item.query||'无触发词')},h('p',null,'请求阶段：'+(item.request_inclusion??'未知')+'；实际采用：'+(item.actual_use??'未知')),...(item.context??[]).map(m=>h('div',{key:m.id},h(MemoryLink,{item:{...m,label:m.text.slice(0,180)},focus}))))})),
+    h(Fold,{title:'最近想起了什么',onOpen:load},selector,h(LazyList,{name:'recalls',scope,render:item=>h(Fold,{title:when(item.created_at)+' · '+(item.query||'无触发词')},h('p',null,item.presentation?.summary??'这条历史记录尚无请求回执'),h('p',{className:'ab-small ab-muted'},item.presentation?.usage_label??'缺少可核对的引用证据'),...(item.context??[]).map(m=>h('div',{key:m.id},h(MemoryLink,{item:{...m,label:m.text.slice(0,180)},focus}))))})),
     h(Fold,{title:'运行状态与说明',style:{order:1},onOpen:load},selector,h(Diagnostics,{scope,toast})));
 };
 

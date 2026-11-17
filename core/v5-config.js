@@ -69,3 +69,6 @@ Object.assign(PARAMS.W5,{self_action_limit:['每轮自主行动上限',0,3,1],se
 
 Object.assign(DEFAULT_CONFIG.W5,{self_start_hour:1,self_end_hour:5,self_rounds_per_night:5,self_round_interval_minutes:20});
 Object.assign(PARAMS.W5,{self_start_hour:['自主学习开始时／北京时间',0,23,1],self_end_hour:['自主学习结束时／北京时间',1,24,1],self_rounds_per_night:['每日自主学习轮数',1,12,1],self_round_interval_minutes:['轮次间隔／分钟',5,180,1]});
+
+Object.assign(DEFAULT_CONFIG.W5,{self_strategy_enabled:1,strategy_min_evidence:2,strategy_trial_feedback:3});
+Object.assign(PARAMS.W5,{self_strategy_enabled:['夜间自省策略试用',0,1,1],strategy_min_evidence:['发现问题的独立反馈数',2,12,1],strategy_trial_feedback:['效果验证所需明确反馈数',3,12,1]});
