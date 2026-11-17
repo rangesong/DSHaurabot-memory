@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "repository": "rangesong/DSHaurabot-memory",
+  "tag_prefix": "code-backups-v",
+  "storage": "github_releases",
+  "include_private_data": false,
+  "verify_public_download": true,
+  "verify_disk_restoration": true,
+  "cleanup_only_after_verification": true
+}

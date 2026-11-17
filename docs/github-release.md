@@ -33,7 +33,7 @@ git push
 
 1. 在 `D:\GitHub\DSHaurabot-memory` 修改源码与 `docs/design/v5.md`、版本说明。
 2. 使用 `node scripts/set-module-version.js <版本>` 同步项目及模块版本。
-3. 执行下方检查与构建；更新 DSH 使用 `node scripts/update-aurabot-module.js --data-dir D:\DSH\plugins-data\aurabot --apply`。更新器校验代码、保留回退副本，不交换模块数据与角色资源。
+3. 执行下方检查与构建；更新 DSH 使用 `node scripts/update-aurabot-module.js --data-dir D:\DSH\plugins-data\aurabot --apply`。更新器先把旧代码上传到GitHub Releases，公开下载并恢复校验后才替换；成功后清理临时旧代码，保留云端回执，不交换模块数据与角色资源。详见[程序备份与恢复](code-backups.md)。
 4. 查看 Git diff，核对后提交。第一次提交前按自己的身份配置 Git 作者。
 
 迁移前的工作区同步器会读取本机迁移回执，并检查上次导出的文件哈希；新仓库出现独立修改后，它会停止并列出冲突，不覆盖改动。不要把旧目录继续当作主要开发源，不需要每次双向同步。同步清单不包含聊天、数据库、密钥、旧截图或模型二进制。
@@ -59,3 +59,5 @@ git push
 0.4.0 本机源码232项检查通过；不含私人 GLB 的导出仓库231项通过、1项资产检查按预期跳过。代码包与静态检查通过，并已在 DSH 核对栏目布局、参数与聚焦入口，执行20次隔离模型对比。完整范围和限制见 [0.4.0说明](../upgrade-0.4.0.md)。没有运行云端工作流；这些结果仍不代表真实宿主的所有长期边界都已验收。
 
 接口依据：[官方 checkout](https://github.com/actions/checkout)、[setup-node](https://github.com/actions/setup-node)、[upload-artifact](https://github.com/actions/upload-artifact) 与 [Release API](https://docs.github.com/en/rest/releases/releases)。版本和管理方式按这些官方文档配置。
+
+历史程序归档使用`code-backups-v<版本>`标签，与普通`v<版本>`Release草稿流程分开。历史备份不包含聊天、数据库、密钥和私人模型。每份快照的代码ZIP与恢复清单绑定内容hash，不覆盖已有不同附件。

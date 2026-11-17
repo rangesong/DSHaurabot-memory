@@ -6,6 +6,8 @@
 
 **[阅读完整项目说明：模块、功能、参数与能力边界](docs/project-overview.md)**
 
+程序旧版本已采用[GitHub Releases云端备份与恢复](docs/code-backups.md)：上传并公开下载、解压校验后清理本地旧代码，记忆与私人素材单独保留。
+
 源码仓库：[rangesong/DSHaurabot-memory](https://github.com/rangesong/DSHaurabot-memory)。插件集合仓库：[rangesong/DSH](https://github.com/rangesong/DSH)，通过 `plugins/thinkstar-memory` 子模块引用本项目。Thinkstar在此仓库独立维护版本、检查与Release；集合仓库固定引用某次提交，更新插件后还需在集合仓库更新引用。
 
 Thinkstar向Aurabot主聊天流程提供记忆依据和表达参考；最终QQ回答仍由Aurabot的模型与发送链完成。当前定位为与内置 `memory` 协作的增强模块，尚未实现其全部功能的独立替代。
