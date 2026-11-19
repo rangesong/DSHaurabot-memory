@@ -1,3 +1,4 @@
+import {testRuntimeRoot} from '../scripts/lib/test-workspace.js';
 import test from 'node:test';
 import {createServer} from 'node:http';
 import {createMemorySeaHandler} from '../server/memory-sea-handler.js';
@@ -10,7 +11,7 @@ import { archiveDay } from '../core/v5-archive.js';
 
 const DAY=86400000,at=Date.parse('2026-10-02T12:00:00+08:00');
 function fixture(t,{disk=false}={}){
-  const root=fileURLToPath(new URL('../runtime-data/',import.meta.url));mkdirSync(root,{recursive:true});
+  const root=testRuntimeRoot(fileURLToPath(new URL('../runtime-data/',import.meta.url)));mkdirSync(root,{recursive:true});
   const dir=disk?mkdtempSync(join(root,'archive-test-')):null,file=dir?join(dir,'memory.sqlite'):':memory:';
   let now=at+400*DAY,r=new V5Runtime({file,clock:()=>now});
   const scope=r.addScope({persona_id:'synthetic',scope:'private:100'}).id;

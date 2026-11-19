@@ -1,8 +1,10 @@
+import {managedScript,writeTestResult} from './lib/test-workspace.js';
 // Isolated synthetic storage/retrieval check, not a production latency benchmark.
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
 import { V5Runtime } from '../core/v5-runtime.js';
 
+await managedScript(import.meta.url,async()=>{
 const count = Number(process.env.THINKSTAR_SCALE_RECORDS ?? 100000);
 assert.ok(Number.isSafeInteger(count) && count > 0 && count <= 100000);
 const runtime = new V5Runtime();
@@ -21,7 +23,9 @@ try {
   assert.equal(runtime.memory(protectedInput.memory_id).protection, 'P1');
   const directory = runtime.store.catalogs(protectedInput.scope, 'M2');
   assert.ok(directory.some(c => (c.semantic_refs ?? []).some(id => runtime.memory(id).protection === 'P1')));
-  console.log(JSON.stringify({ passed: true, ordinary_records: count, protected_original: 'byte-preserved', exact_retrieval: 'hit', duration_ms: Math.round(performance.now() - started), bytes: runtime.store.stats().bytes, query_ms: Math.round(queryMs), rss_mib: +(process.memoryUsage().rss/1048576).toFixed(1), peak_rss_mib: +(process.resourceUsage().maxRSS/1024).toFixed(1), ambiguous_model_answer_quality: 'not_measured' }));
+  const report={ passed: true, ordinary_records: count, protected_original: 'byte-preserved', exact_retrieval: 'hit', duration_ms: Math.round(performance.now() - started), bytes: runtime.store.stats().bytes, query_ms: Math.round(queryMs), rss_mib: +(process.memoryUsage().rss/1048576).toFixed(1), peak_rss_mib: +(process.resourceUsage().maxRSS/1024).toFixed(1), ambiguous_model_answer_quality: 'not_measured' };writeTestResult(report);console.log(JSON.stringify(report));
 } finally {
   runtime.close();
 }
+
+});

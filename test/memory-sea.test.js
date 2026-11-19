@@ -1,3 +1,4 @@
+import {testRuntimeRoot} from '../scripts/lib/test-workspace.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
@@ -11,7 +12,7 @@ import { createMemorySeaServer } from '../scripts/serve-memory-sea.js';
 import { Camera } from '../apps/memory-sea/src/camera.js';
 import { StarLayout } from '../apps/memory-sea/src/layout.js';
 
-const runtime = fileURLToPath(new URL('../runtime-data/', import.meta.url));
+const runtime = testRuntimeRoot(fileURLToPath(new URL('../runtime-data/', import.meta.url)));
 const revision = 'a'.repeat(64), importDirectory = `imports/${revision.slice(0, 24)}-12345678`;
 const keyFor = (context) => createHash('sha256').update(contextKey(context)).digest('hex').slice(0, 24);
 function fixture(t) {

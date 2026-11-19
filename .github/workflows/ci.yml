@@ -28,6 +28,14 @@ jobs:
       - run: npm run check:repo
       - name: Isolated synthetic tests
         run: npm test
+      - name: Preserve synthetic test reports even when tests fail
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: thinkstar-test-reports-${{ matrix.os }}
+          path: runtime-data/test-reports/
+          if-no-files-found: ignore
+          retention-days: 30
       - name: Build code without private character resources
         run: npm run build:code
       - run: node scripts/check-release-artifacts.js

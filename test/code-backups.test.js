@@ -1,7 +1,8 @@
+import {testRuntimeRoot} from '../scripts/lib/test-workspace.js';
 import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';import path from 'node:path';import {fileURLToPath} from 'node:url';
 import {snapshotCode,packSnapshot,restoreBackup,archiveCode,cleanupVerifiedCode,cleanupVerifiedCodeZip,sha256} from '../scripts/lib/code-backups.js';
 import {GitHubClient} from '../scripts/lib/github-client.js';
-const runtime=fileURLToPath(new URL('../runtime-data/',import.meta.url));
+const runtime=testRuntimeRoot(fileURLToPath(new URL('../runtime-data/',import.meta.url)));
 function fixture(t){fs.mkdirSync(runtime,{recursive:true});const parent=fs.mkdtempSync(path.join(runtime,'cloud-code-test-')),folder=path.join(parent,'code-before-test');fs.mkdirSync(folder);const files={'index.mjs':Buffer.from("export default {id:'thinkstar-memory'};"),'module.json':Buffer.from(JSON.stringify({id:'thinkstar-memory',version:'0.1.0'})),'package.json':Buffer.from('{"type":"module"}')};for(const [name,bytes]of Object.entries(files))fs.writeFileSync(path.join(folder,name),bytes);const build={schema:1,id:'thinkstar-memory',version:'0.1.0',files:Object.entries(files).map(([name,bytes])=>({path:name,bytes:bytes.length,sha256:sha256(bytes)}))};fs.writeFileSync(path.join(folder,'thinkstar-build.json'),JSON.stringify(build));t.after(()=>{if(path.dirname(parent)!==path.resolve(runtime)||!path.basename(parent).startsWith('cloud-code-test-'))throw Error('Unsafe test cleanup');fs.rmSync(parent,{recursive:true,force:true});});return {parent,folder,build};}
 class MemoryGitHub{
  repository='rangesong/DSHaurabot-memory';items=[];blobs=new Map();uploads=0;publicReads=0;releaseObject={id:1,html_url:'https://github.com/rangesong/DSHaurabot-memory/releases/tag/code-backups-v0.1.0',draft:true};

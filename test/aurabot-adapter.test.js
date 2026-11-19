@@ -1,3 +1,4 @@
+import {testRuntimeRoot} from '../scripts/lib/test-workspace.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -10,7 +11,7 @@ import { importAurabot } from '../scripts/import-aurabot.js';
 import { MemoryService } from '../core/memory-service.js';
 import { projectGraph } from '../core/graph-projector.js';
 
-const runtime = fileURLToPath(new URL('../runtime-data/', import.meta.url));
+const runtime = testRuntimeRoot(fileURLToPath(new URL('../runtime-data/', import.meta.url)));
 const at = 1794362400000;
 const row = (extra = {}) => ({ t: at, chatId: 'private:100', who: '合成用户', uid: '100', text: '只存在于测试夹具的原话', ...extra });
 const write = (file, value) => { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, JSON.stringify(value), 'utf8'); };

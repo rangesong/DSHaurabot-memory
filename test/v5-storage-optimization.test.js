@@ -1,3 +1,4 @@
+import {testRuntimeRoot} from '../scripts/lib/test-workspace.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtempSync,mkdirSync,rmSync,existsSync,readFileSync} from 'node:fs';
@@ -8,7 +9,7 @@ import {V5Store} from '../core/v5-store.js';
 import {CURRENT_VERSION_JSON} from '../core/v5-storage-codec.js';
 import {archiveDay} from '../core/v5-archive.js';
 
-function fixture(t){const root=resolve('runtime-data');mkdirSync(root,{recursive:true});const dir=mkdtempSync(join(root,'storage-v2-test-')),file=join(dir,'memory.sqlite');let r=new V5Runtime({file});t.after(()=>{r.close();assert.equal(dirname(dir),root);rmSync(dir,{recursive:true,force:true});});return {file,dir,get r(){return r;},reopen(){r.close();r=new V5Runtime({file});return r;}};}
+function fixture(t){const root=resolve(testRuntimeRoot('runtime-data'));mkdirSync(root,{recursive:true});const dir=mkdtempSync(join(root,'storage-v2-test-')),file=join(dir,'memory.sqlite');let r=new V5Runtime({file});t.after(()=>{r.close();assert.equal(dirname(dir),root);rmSync(dir,{recursive:true,force:true});});return {file,dir,get r(){return r;},reopen(){r.close();r=new V5Runtime({file});return r;}};}
 function asV1(store){const memories=store.all('all',{includeForgotten:true}),versions=store.sql('SELECT id,revision,json FROM versions').all().map(row=>store.decodeVersion(row)),catalogs=store.catalogs();for(const m of memories)store.sql('UPDATE memories SET json=? WHERE id=?').run(JSON.stringify(m),m.id);for(const v of versions)store.sql('UPDATE versions SET json=? WHERE id=? AND revision=?').run(JSON.stringify(v),v.id,v.revision);for(const c of catalogs)store.sql('UPDATE catalogs SET json=? WHERE id=?').run(JSON.stringify(c),c.id);store.sql('DELETE FROM reference_sets').run();store.setMeta('thinkstar_storage_schema',1);return {memories,versions,catalogs};}
 
 test('v1 migration preserves every logical object, version, catalog, original and creates a usable rollback backup',t=>{

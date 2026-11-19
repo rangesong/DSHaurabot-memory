@@ -1,3 +1,4 @@
+import {managedScript,writeTestResult} from './lib/test-workspace.js';
 // Isolated synthetic benchmark. Never reads Aurabot, user databases, or model credentials.
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -7,6 +8,7 @@ import { dirname, resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { V5Runtime } from '../core/v5-runtime.js';
 
+await managedScript(import.meta.url,async()=>{
 const count = Number(process.env.THINKSTAR_BENCH_RECORDS ?? 5000);
 assert.ok(Number.isSafeInteger(count) && count >= 100 && count <= 20000);
 const folder = mkdtempSync(join(tmpdir(), 'thinkstar-benchmark-'));
@@ -40,6 +42,7 @@ try {
   result.idle = { seconds: +(idleMs / 1000).toFixed(2), cpu_ms: +((idleUsed.user + idleUsed.system) / 1000).toFixed(2), note: 'Core with no work; excludes host timers, browser, and other plugins.' };
   result.memory = { rss_mib: +(process.memoryUsage().rss / 1048576).toFixed(1), peak_rss_mib: +(process.resourceUsage().maxRSS / 1024).toFixed(1), database_mib: +(runtime.store.stats().bytes / 1048576).toFixed(1) };
   result.integrity = 'protected original and exact retrieval preserved';
+  writeTestResult(result);
   console.log(JSON.stringify(result, null, 2));
 } finally {
   runtime.close();
@@ -47,3 +50,5 @@ try {
   assert.ok(folder.split(/[\\/]/).at(-1).startsWith('thinkstar-benchmark-'));
   rmSync(folder, { recursive: true, force: true });
 }
+
+});

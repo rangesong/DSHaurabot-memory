@@ -1,3 +1,4 @@
+import {testRuntimeRoot} from '../scripts/lib/test-workspace.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdirSync,mkdtempSync,rmSync,existsSync} from 'node:fs';
@@ -5,7 +6,7 @@ import {dirname,resolve,join} from 'node:path';
 import {V5Runtime} from '../core/v5-runtime.js';
 import {trashMonth} from '../core/v5-trash.js';
 const DAY=86400000,at=Date.parse('2026-11-15T02:00:00+08:00');
-function fixture(t){const root=resolve('runtime-data');mkdirSync(root,{recursive:true});const dir=mkdtempSync(join(root,'trash-test-')),file=join(dir,'memory.sqlite');let now=at,r=new V5Runtime({file,clock:()=>now});t.after(()=>{r.close();assert.equal(dirname(dir),root);rmSync(dir,{recursive:true,force:true});});return {dir,get r(){return r;},advance(days){now+=days*DAY;},reopen(){r.close();r=new V5Runtime({file,clock:()=>now});},add(text){return r.ingest({text,process:true});}};}
+function fixture(t){const root=resolve(testRuntimeRoot('runtime-data'));mkdirSync(root,{recursive:true});const dir=mkdtempSync(join(root,'trash-test-')),file=join(dir,'memory.sqlite');let now=at,r=new V5Runtime({file,clock:()=>now});t.after(()=>{r.close();assert.equal(dirname(dir),root);rmSync(dir,{recursive:true,force:true});});return {dir,get r(){return r;},advance(days){now+=days*DAY;},reopen(){r.close();r=new V5Runtime({file,clock:()=>now});},add(text){return r.ingest({text,process:true});}};}
 
 test('explicit discard leaves the active query, durably preserves exact originals and restores layers after restart',t=>{
   const h=fixture(t),a=h.add('必须记住：合成星桥实验的完整条件是雨天取消，预算57元。'),before=structuredClone(h.r.memory(a.memory_id));

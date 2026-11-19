@@ -15,6 +15,10 @@
     "build:aurabot": "node scripts/build-aurabot-module.js",
     "build:code": "node scripts/build-aurabot-module.js --code-only",
     "check:repo": "node scripts/check-repository.js",
-    "version:module": "node scripts/set-module-version.js"
+    "version:module": "node scripts/set-module-version.js",
+    "test:cleanup": "node scripts/cleanup-test-artifacts.js",
+    "test:years": "node scripts/check-multi-year-memory.js",
+    "test:scale": "node scripts/check-v5-scale.js",
+    "test:bench": "node scripts/benchmark-memory.js"
   }
 }

@@ -116,6 +116,8 @@ node scripts/build-aurabot-module.js --code-only
 node scripts/check-release-artifacts.js
 ```
 
+测试完成或失败后，受管的合成数据库、缓存及临时文件会自动清理；日志、结果和清理回执保存在 `runtime-data/test-reports/<运行编号>/`。下次测试会核对并回收创建至少一小时且主子进程已结束的受管残留，未知目录与真实记忆、模型、必要备份不动。容量测试同样不再固定留下大数据库，见[测试与清理规则](docs/test-artifacts.md)。
+
 Windows可双击 `启动星图.vbs` 打开独立工作台，使用 `停止星图服务.vbs` 正常停止，启动排查使用 `诊断启动星图.cmd`。独立工作台和Aurabot模块是不同运行入口；避免多个实例同时写同一运行库。
 
 | 目录 | 职责 |

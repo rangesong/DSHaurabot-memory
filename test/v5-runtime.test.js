@@ -1,3 +1,4 @@
+import {testRuntimeRoot} from '../scripts/lib/test-workspace.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync,mkdtempSync,rmSync,writeFileSync,readFileSync,appendFileSync } from 'node:fs';
@@ -9,7 +10,7 @@ import { AurabotLiveReader } from '../adapters/aurabot/live-reader.js';
 import { channelGeometry } from '../apps/memory-sea/src/v5-character.js';
 import { createMemorySeaServer } from '../scripts/serve-memory-sea.js';
 
-const at=1794500000000,runtimeRoot=fileURLToPath(new URL('../runtime-data/',import.meta.url));
+const at=1794500000000,runtimeRoot=testRuntimeRoot(fileURLToPath(new URL('../runtime-data/',import.meta.url)));
 function fixture(t,{disk=false}={}){let time=at;let dir;if(disk){mkdirSync(runtimeRoot,{recursive:true});dir=mkdtempSync(join(runtimeRoot,'v5-test-'));}const file=disk?join(dir,'memory.sqlite'):':memory:';let r=new V5Runtime({file,clock:()=>time});t.after(()=>{r.close();if(dir){assert.equal(dirname(dir),resolve(runtimeRoot));assert.ok(basename(dir).startsWith('v5-test-'));rmSync(dir,{recursive:true,force:true});}});return {get r(){return r;},dir,setTime:x=>time=x,reopen:()=>{r.close();r=new V5Runtime({file,clock:()=>time});return r;}};}
 const input=(r,text,extra={})=>r.ingest({text,process:true,...extra});
 

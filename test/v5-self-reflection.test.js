@@ -1,3 +1,4 @@
+import {testRuntimeRoot} from '../scripts/lib/test-workspace.js';
 import test from 'node:test';import assert from 'node:assert/strict';
 import fs from 'node:fs';import path from 'node:path';import {fileURLToPath} from 'node:url';import {backup} from 'node:sqlite';
 import {V5Runtime} from '../core/v5-runtime.js';
@@ -36,7 +37,7 @@ test('late consolidation starts one round, and the window end prevents compresse
  const f=fixture(t);f.setTime(at('04:50'));assert.equal((await f.r.selfReflection.run({...f.options,maintenance_complete:false})).status,'deferred');assert.equal((await f.r.selfReflection.run(f.options)).status,'completed');f.r.processJobs();f.setTime(at('04:59'));assert.equal((await f.r.selfReflection.run(f.options)).status,'window_full');f.setTime(at('05:00'));assert.equal((await f.r.selfReflection.run(f.options)).status,'outside_window');assert.deepEqual(f.counts(),{calls:1,actions:1});
 });
 test('restart retains completed round, interval and daily ledger without rerunning the first question',async t=>{
- const f=fixture(t);await f.r.selfReflection.run(f.options);f.r.processJobs();const root=fileURLToPath(new URL('../runtime-data/',import.meta.url));fs.mkdirSync(root,{recursive:true});const folder=fs.mkdtempSync(path.join(root,'schedule-restart-'));let restarted;t.after(()=>{restarted?.close();if(!path.resolve(folder).startsWith(path.resolve(root)+path.sep))throw Error('Unsafe test path');fs.rmSync(folder,{recursive:true,force:true});});const file=path.join(folder,'memory.sqlite');await backup(f.r.store.db,file);
+ const f=fixture(t);await f.r.selfReflection.run(f.options);f.r.processJobs();const root=testRuntimeRoot(fileURLToPath(new URL('../runtime-data/',import.meta.url)));fs.mkdirSync(root,{recursive:true});const folder=fs.mkdtempSync(path.join(root,'schedule-restart-'));let restarted;t.after(()=>{restarted?.close();if(!path.resolve(folder).startsWith(path.resolve(root)+path.sep))throw Error('Unsafe test path');fs.rmSync(folder,{recursive:true,force:true});});const file=path.join(folder,'memory.sqlite');await backup(f.r.store.db,file);
  let clock=at('01:24');restarted=new V5Runtime({file,clock:()=>clock});assert.equal((await restarted.selfReflection.run(f.options)).status,'waiting_interval');assert.equal(f.counts().calls,1);clock=at('01:25');const result=await restarted.selfReflection.run(f.options);assert.equal(result.status,'completed');assert.equal(restarted.selfReflection.get(result.id).round,2);assert.equal(f.counts().calls,2);
 });
 test('failure counts as an attempt and waits a full twenty minutes after finishing',async t=>{

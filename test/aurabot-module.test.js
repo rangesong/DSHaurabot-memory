@@ -1,3 +1,4 @@
+import {testRuntimeRoot} from '../scripts/lib/test-workspace.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync,mkdtempSync,rmSync } from 'node:fs';
@@ -8,7 +9,7 @@ import { HostModelClient } from '../adapters/aurabot/module/lib/host-model-clien
 import { DatabaseSync } from 'node:sqlite';
 import { Readable } from 'node:stream';
 
-const runtimeRoot=fileURLToPath(new URL('../runtime-data/',import.meta.url));
+const runtimeRoot=testRuntimeRoot(fileURLToPath(new URL('../runtime-data/',import.meta.url)));
 async function fixture(t,{dsh,readMethods={}}={}){
   mkdirSync(runtimeRoot,{recursive:true});const dir=mkdtempSync(join(runtimeRoot,'module-test-')),instances=[];
   const config={debug:false,persona:{current:'alpha'}},settings={mode:'active',captureGroups:false,captureOtherPrivate:false,contextTokens:1536,allowHostModel:false};

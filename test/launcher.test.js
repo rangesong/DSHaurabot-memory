@@ -1,3 +1,4 @@
+import {testRuntimeRoot} from '../scripts/lib/test-workspace.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
@@ -7,7 +8,7 @@ import {fileURLToPath} from 'node:url';
 import {spawn} from 'node:child_process';
 
 test('hidden launcher can reopen while the detached service keeps its own log',{skip:process.platform!=='win32',timeout:30000},async()=>{
-  const root=fileURLToPath(new URL('../',import.meta.url)),runtime=join(root,'runtime-data');mkdirSync(runtime,{recursive:true});
+  const root=fileURLToPath(new URL('../',import.meta.url)),runtime=testRuntimeRoot(join(root,'runtime-data'));mkdirSync(runtime,{recursive:true});
   const folder=mkdtempSync(join(runtime,'launcher regression-'));mkdirSync(join(folder,'scripts'));
   const reserve=createServer();await new Promise(resolve=>reserve.listen(0,'127.0.0.1',resolve));const port=reserve.address().port;await new Promise(resolve=>reserve.close(resolve));
   for(const file of ['launch-memory-sea.js','launch-hidden.cmd','run-node-task.cmd'])copyFileSync(join(root,'scripts',file),join(folder,'scripts',file));
