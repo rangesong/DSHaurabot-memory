@@ -135,3 +135,12 @@ test('installed compression kernel preserves existing blocks when only unassigne
  const folded=core.applyCompression({messages,state:first.state,config,ranges:[{startRef:refs['m-text-0'],endRef:refs['m-text-5'],summary:'已完成事实；精确值123.456、固定来源、历史状态。'.repeat(20)}]});assert.ok(folded.result.blocksCreated>0);
  const after=core.processTurn({messages:messages.filter(m=>!m.imagePart),state:folded.state,config,tokenCount:30000,renderTags:'none'});assert.ok(folded.state.blocks.filter(b=>b.active).every(b=>after.state.blocks.some(a=>a.blockId===b.blockId&&a.active&&a.summary===b.summary)));
 });
+
+test('automatic text folds reject marginal gains that cannot repay a full cache rebuild',async()=>{
+ const {autoBenefit}=await import('../extensions/aurabot/history-vault/existing-engine.mjs');const small=autoBenefit({beforeTokens:400000,savedTokens:20000,freshToCachedRatio:50,expectedReuse:128});assert.equal(small.allowed,false);assert.ok(small.paybackRequests>128);const large=autoBenefit({beforeTokens:500000,savedTokens:200000,freshToCachedRatio:50,expectedReuse:128});assert.equal(large.allowed,true);assert.equal(autoBenefit({beforeTokens:100000,savedTokens:0}).allowed,false);
+});
+test('automatic batching is disabled by its own switch and waits for completed turns without network calls',async()=>{
+ const {maybeAutoTextPlan}=await import('../extensions/aurabot/history-vault/existing-engine.mjs'),folder=fs.mkdtempSync(path.join(process.env.THINKSTAR_TEST_TMP,'auto-text-')),api={dataDir:n=>path.join(folder,n)},sourceEvents=fixtures(10),plan={kind:'verified-existing-engine-plan',scope,backupReceipt:{verified:true},ranges:[]};fs.writeFileSync(api.dataDir('context-governance-plan.json'),JSON.stringify(plan));let calls=0;const fetcher=async()=>{calls++;throw Error('unexpected network');};
+ let r=await maybeAutoTextPlan(api,()=>({contextTextBatchEnabled:false}),{scope,sourceEvents,fetcher});assert.equal(r.held,'batch-switch-off');assert.equal(calls,0);
+ r=await maybeAutoTextPlan(api,()=>({}),{scope,sourceEvents,fetcher,now});assert.equal(r.held,'initialized-batch-boundary');r=await maybeAutoTextPlan(api,()=>({}),{scope,sourceEvents,fetcher,now:now+3600000});assert.equal(r.held,'waiting-batch-boundary');assert.equal(calls,0);
+});

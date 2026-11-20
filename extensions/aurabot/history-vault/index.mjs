@@ -183,7 +183,7 @@ export function shouldRecord(row, { recordGroups = true, groupList = '', private
 export default {
   id: 'history-vault',
   name: '跨会话记忆',
-  version:"0.2.1",
+  version:"0.2.2",
   api: 1,
   description: '三层存储跨会话保留聊天细节，分层读取，会话归档后细节不丢，重复压缩不重复花模型调用',
   panel: 'panel.js',
@@ -200,6 +200,7 @@ export default {
     dailyCalls: 24,       // 每天最多几次压缩模型调用（成本上限；要够首装回填一周聊天用）
     injectDays: 3,        // 注入备忘覆盖最近几天
     injectChars: INJECT_MAX_CHARS,
+    contextTextBatchEnabled:true,contextTextBatchTurns:16,contextTextCooldownMinutes:20,contextTextMinTokens:20000,contextFreshToCachedRatio:50,contextExpectedReuseRequests:128,
     contextEngine: 'existing',contextCompressionOrigin: '',contextMemoEnabled: true,contextImagesEnabled: true,contextToolsEnabled: true,contextRetainTurns: 8,
     contextDedupEnabled: true, // 只在 QQ 模型上下文中合并完全相同的历史备忘，日志和记忆库不变
     injectOnce: true,     // 同一会话同一份备忘只注入一次；摘要更新或换会话才重新注入
@@ -218,6 +219,8 @@ export default {
     { key: 'injectDays', label: '备忘覆盖天数', type: 'number', min: 1, max: 14, step: 1 },
     {key:'contextDedupEnabled',label:'主人私聊上下文治理',type:'switch',hint:'只治理当前主人私聊；使用宿主原生替换事件保留原日志。关闭停止新增治理；恢复已治理原文见恢复说明。'},
     ...[['contextMemoEnabled','同来源同版本记忆去重'],['contextImagesEnabled','旧回合完全相同图片去重'],['contextToolsEnabled','已完成相同只读工具成对归并']].map(([key,label])=>({key,label,type:'switch'})),
+    {key:'contextTextBatchEnabled',label:'后续记忆文字按收益批量去重',type:'switch',hint:'同时满足完成回合、间隔、节省量和缓存回本条件才整理；不增加摘要模型调用。'},
+    ...[['contextTextBatchTurns','文字去重最少完成回合',8,64],['contextTextCooldownMinutes','文字去重最短间隔（分钟）',10,1440],['contextTextMinTokens','文字去重最小估算节省',8000,500000],['contextFreshToCachedRatio','新输入与缓存价格倍数（估算）',1,100],['contextExpectedReuseRequests','预计后续复用请求数（估算）',1,10000]].map(([key,label,min,max])=>({key,label,type:'number',min,max,step:1,hint:'默认按完整缓存重建成本保守估算，并留 25% 回本余量；只作自动整理门槛，不代表真实费用承诺。'})),
     {key:'contextCompressionOrigin',label:'现有压缩服务的本机地址',type:'text',hint:'安装时自动配置。仅接受本机 HTTP 地址；端口变化后重新填写，不能填模型 API。'},
     {key:'contextRetainTurns',label:'完整保留最近完成回合',type:'number',min:4,max:32,step:1,hint:'默认 8；在途、失败、未确认结果保持原文；检测比较/OCR/坐标任务时保留全部图片。'},
     { key: 'injectOnce', label: '同一会话只注入一次', type: 'switch', hint: '默认开：同一份备忘不再每轮重复写进会话历史；摘要更新或换会话时自动重新注入。关掉恢复每轮注入。' },

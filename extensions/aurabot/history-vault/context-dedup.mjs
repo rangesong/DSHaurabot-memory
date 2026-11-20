@@ -1,6 +1,6 @@
 import {createHash,randomUUID} from 'node:crypto';
 import {appendFileSync,readFileSync,writeFileSync,renameSync,existsSync} from 'node:fs';
-import {applyExistingPlan,existingImageProof} from './existing-engine.mjs';
+import {applyExistingPlan,existingImageProof,maybeAutoTextPlan} from './existing-engine.mjs';
 const hash=v=>createHash('sha256').update(typeof v==='string'?v:JSON.stringify(v)).digest('hex');
 const canonical=v=>Array.isArray(v)?v.map(canonical):v&&typeof v==='object'?Object.fromEntries(Object.keys(v).sort().map(k=>[k,canonical(v[k])])):v;
 function imageIdentity(b){const copy=structuredClone(b);if(copy.attachment)delete copy.attachment.name;return canonical(copy);}
@@ -94,10 +94,12 @@ export function installMemoContextDedup(api,cfg){
   const [snapshot,raw]=await Promise.all([query.readSurface(sid),query.readSession(sid)]),cut=agent.session.seq;
   if(raw.events.at(-1)?.seq!==snapshot.capturedThroughSeq)throw Error('会话读取期间已变化，保留本次原文');
   const events=[...snapshot.events,...raw.events.filter(e=>e.type==='turn/start'||e.type==='turn/end')].sort((a,b)=>a.seq-b.seq);
+  const automaticText=existing?await maybeAutoTextPlan(api,cfg,{scope,sourceEvents:events,apply}):null;
   const plan=planContextGovernance(events,{...scope,retainTurns:cfg().contextRetainTurns??8,memo:!existing&&cfg().contextMemoEnabled!==false,images:imagesAllowed,tools:!existing&&cfg().contextToolsEnabled!==false});
   if(existing){plan.edits=plan.edits.filter(edit=>edit.type==='user/message');plan.stats.imageBlocks=plan.edits.reduce((n,edit)=>{const original=snapshot.events.find(e=>e.seq===edit.start);return n+(message(original).content.filter(b=>b.type==='image').length-edit.message.content.filter(b=>b.type==='image').length);},0);}
   if(existing)for(const edit of plan.edits){const original=snapshot.events.find(e=>e.seq===edit.start);const m=message(original);edit.message.source=m.source;edit.data=edit.type==='user/message'?edit.message:{...original.data,message:edit.message};}
-  const receipt={at:Date.now(),sessionId:sid,scope:hash([persona(),chatOf(sid)]),capturedThroughSeq:snapshot.capturedThroughSeq,engine:engineResult,imagesCompatibilityVerified:imagesAllowed,stats:plan.stats,edits:plan.edits.length,applied:false};
+  const receipt={at:Date.now(),sessionId:sid,scope:hash([persona(),chatOf(sid)]),capturedThroughSeq:snapshot.capturedThroughSeq,engine:engineResult,automaticText,imagesCompatibilityVerified:imagesAllowed,stats:plan.stats,edits:plan.edits.length,applied:false};
+  if(closed||cfg().contextDedupEnabled===false)return {...receipt,held:'closed-before-commit'};
   if(apply&&plan.edits.length){
    if(snapshot.capturedThroughSeq!==cut-1||agent.session.seq!==cut)throw Error('上下文已变化，延后到下一次请求');
    // A supported atomic batch: source logs remain immutable, no custom replay interpreter.

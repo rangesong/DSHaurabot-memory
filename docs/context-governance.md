@@ -7,7 +7,7 @@ Canonical sources are extensions/aurabot/fish-world and extensions/aurabot/histo
 Requires Node 22.13+ and compatible Aurabot 1.3.0-beta.1 module APIs. The extensions use Node built-ins; DSH supplies sessionQuery, Session and tool services. No credentials, models or databases are bundled.
 
     node scripts/set-context-module-version.js fish-world 1.1.0
-    node scripts/set-context-module-version.js history-vault 0.2.1
+    node scripts/set-context-module-version.js history-vault 0.2.2
     node scripts/build-context-modules.js
     node scripts/run-tests.js context-governance.test.js
     node scripts/update-aurabot-module.js --extension fish-world --data-dir <absolute-data-directory>
@@ -42,3 +42,5 @@ Tests use scripts/run-tests.js and scripts/lib/test-workspace.js. Set DSH_ASAR a
 ## Evidence and soft targets
 
 Synthetic input/cost estimates, real-history in-memory replay, live-host functionality and provider billing are reported separately. Soft targets are 80–120k total input for world life and 200–250k for owner private; essential evidence is preserved above them. Include cold-cache rebuilding, reuse, output and calls per completed task. Seek at least 30 comparable natural requests for each target; do not manufacture QQ traffic, world mutations or paid model samples. A daily total or one low request is not proof of causal savings.
+
+Automatic follow-up text batches have their own switch and require at least 16 completed turns, a 20-minute interval, and 20k estimated tokens saved. A full-cache-rebuild payback gate additionally assumes a fresh/cache unit-price ratio of 50 and 128 later reuse requests, with 25% margin. These are conservative configurable estimates, not measured savings. Small unprofitable folds remain untouched; no extra model call is used to decide. At most 128 live compressible refs are inspected, failed/insufficient attempts wait five minutes, and existing engine protection/ref checks remain authoritative.
