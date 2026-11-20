@@ -50,7 +50,7 @@
       "module": "memory",
       "file": "memory.js",
       "before_sha256": "c8f4b0e3664bb7ac73c250cc5e31c36d3f8f2c37ad64ca1416c484f52903c62a",
-      "after_sha256": "3fbc289f88f4b16ff459fb7e0d6bee8de739ff81a2230febb0abe6ab83345438",
+      "after_sha256": "83cde98c54e98e65cd7b51a8965b0212f2d4bef2b732f464271b86bbd3d71331",
       "operations": [
         {
           "find": "setConfig = null, storage: suppliedStorage = null }) {",
@@ -175,6 +175,14 @@
         {
           "find": "    const current = new Set(index().docs.map((d) => d.it.id))\n    hits = (opts.preparationChat",
           "replace": "    const current = new Set(index(opts.preparationChat).docs.map((d) => d.it.id))\n    hits = (opts.preparationChat"
+        },
+        {
+          "find": "const { shouldDeferBackground } = __lib('core/offpeak.js')",
+          "replace": "const { shouldDeferBackground, isPeak } = __lib('core/offpeak.js')"
+        },
+        {
+          "find": "    if (Date.now() < retryAt || busy) return\n    const r = due.length ?",
+          "replace": "    if (Date.now() < retryAt || busy) return\n    // Scheduled consolidation can be overdue after a restart; never catch it up at peak price.\n    if (due.length && cfg.scheduledOncePerDay === true && isPeak(now, { holidays: getConfig().cost?.offPeakHolidays || [] })) return\n    if (due.length && cfg.scheduledOncePerDay === true) {\n      if (Object.values(runs).includes(today)) {\n        const already = load()\n        already.runs = { ...(already.runs || {}) }\n        for (const t of due) already.runs[t] = today\n        save(already)\n        return\n      }\n      // Record this day's scheduled attempt before calling the model, including failures and restarts.\n      const attempt = load()\n      attempt.runs = { ...(attempt.runs || {}) }\n      for (const t of due) attempt.runs[t] = today\n      save(attempt)\n    }\n    const r = due.length ?"
         }
       ]
     }

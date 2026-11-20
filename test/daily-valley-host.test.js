@@ -1,0 +1,21 @@
+import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';import path from 'node:path';import {pathToFileURL} from 'node:url';
+const host=process.env.DAILY_VALLEY_HOST_ROOT,modules=process.env.DAILY_VALLEY_MODULES_ROOT,tmp=process.env.THINKSTAR_TEST_TMP;
+test('installed daily guards bound automatic retries while manual requests remain available',{skip:!host||!modules},async t=>{
+ process.env.AURABOT_DATA_DIR=fs.mkdtempSync(path.join(tmp,'daily-host-'));
+ const load=relative=>import(pathToFileURL(path.join(host,'src',relative)).href);
+ const {normalize}=await load('core/config.js'),{createBili}=await load('bili/duty.js'),{createQzone}=await load('features/qzone.js'),store=await load('core/store.js'),reply=await load('chat/reply.js'),access=await load('chat/access.js');
+ const old=globalThis.aurabot;globalThis.aurabot={lib:name=>({'core/store.js':store,'chat/reply.js':reply,'chat/access.js':access}[name]??{})};t.after(()=>globalThis.aurabot=old);
+ const {createDouyin}=await import(pathToFileURL(path.join(modules,'douyin/lib/duty.mjs')).href);
+ const log={info(){},warn(){},debug(){}},at=Date.parse('2026-11-20T08:10:00+08:00');
+ t.mock.timers.enable({apis:['Date'],now:at});let bili=0;
+ const cfg=normalize({enabled:true,bili:{enabled:true,autoBrowse:true,maxRunsPerDay:1,browseWorkHours:'08:00-09:00',reply:false},douyin:{enabled:true,autoBrowse:true,maxRunsPerDay:1,ownerDm:false}});
+ const args={getConfig:()=>cfg,hub:{runSystemTurn:async()=>{bili++;return '[]';}},api:{popular:async()=>[],search:async()=>[]},log,memory:{list:()=>[]}};
+ let b=createBili(args);await b.tick();await b.tick();b=createBili(args);await b.tick();assert.equal(bili,1);await b.run({force:true});assert.equal(bili,2);
+ let dyCalls=0,now=at;const dargs={getConfig:()=>cfg,settings:()=>({browseWorkHours:'08:00-09:00'}),hub:{},memory:{},log,now:()=>now,site:{ensure:async()=>{dyCalls++;return {ok:false,message:'synthetic'};}}};
+ let dy=createDouyin(dargs);await dy.tick();dy=createDouyin(dargs);await dy.tick();assert.equal(dyCalls,1);await dy.run({force:true});assert.equal(dyCalls,2);
+ now+=86400000;await dy.tick();assert.equal(dyCalls,3);
+ let diaryCalls=0;store.writeJson(store.dataDir('diary.json'),{plan:{day:'2026-11-20',times:[0],done:[]},history:[]});
+ const diaryCfg={enabled:true,dryRun:false,diary:{enabled:true,timesPerDay:1,onceDailyAttempt:true,visibility:'all',minChars:8,maxChars:60,attachImage:false}};
+ const qargs={getConfig:()=>diaryCfg,onebot:{},hub:{chatLogOf:()=>[],runSystemTurn:async()=>{diaryCalls++;throw Error('synthetic');}},log};
+ let q=createQzone(qargs);await q.tick();q=createQzone(qargs);await q.tick();assert.equal(diaryCalls,1);await q.writeDiary({preview:true});assert.equal(diaryCalls,2);
+});

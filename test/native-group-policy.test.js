@@ -96,6 +96,23 @@ test('actual current native memory filters before reranking and renders only per
   now+=2*DAY;at(now);const later=await native.recallHintAsync(chat,'aurora','', 'synthetic',['200']);assert.ok(!later.includes('TRACE-NATIVE'));
 });
 
+test('overdue automatic native consolidation waits for off-peak; manual consolidation remains available',{skip:!fs.existsSync(builtin)},async t=>{
+  const at=Date.parse('2026-11-20T10:00:00+08:00');t.mock.timers.enable({apis:['Date'],now:at});
+  const folder=temporary('native-peak-'),patches=nativePatchManifest().files;
+  for(const [name,bytes]of forkBuiltinMemory(builtin)){const patch=patches.find(e=>e.module==='memory'&&e.file===name);fs.writeFileSync(path.join(folder,name),patch?patchNativeSource(bytes,patch):bytes);}
+  const {isPeak}=await import(pathToFileURL(path.join(builtin,'core/offpeak.js')).href);
+  let calls=0,state={items:[],gists:[],profiles:{},insights:{},styles:{},relations:[],chats:{},runs:{}};
+  const lib={'core/store.js':{dataDir:(...args)=>path.join(folder,...args),readJson:(_f,fallback)=>typeof fallback==='function'?fallback():fallback,writeJson(){}},'core/llm.js':{askModel:()=>{calls++;return '';},lastEmptyInfo:()=>''},'core/text.js':{clipText:(x,n)=>String(x).slice(0,n)},'core/offpeak.js':{isPeak,shouldDeferBackground:()=>false},'persona/personas.js':{selfName:()=> 'synthetic',selfNames:()=>['synthetic'],isSelfName:()=>false},'features/memory-vector-local.js':{createLocalVectorIndex:()=>null},'features/rerank.js':{createReranker:()=>({configured:()=>false,settings:()=>({})})}};
+  const old=globalThis.aurabot;globalThis.aurabot={lib:key=>lib[key]};t.after(()=>globalThis.aurabot=old);
+  const {createMemoryStore}=await import(pathToFileURL(path.join(folder,'memory.js')).href);
+  const cfg={cost:{offPeakHolidays:[]},ownerQQ:'100',botQQ:'999',memory:{enabled:true,dailyConsolidate:true,consolidateTimes:['04:00'],scheduledOncePerDay:true,shortTerm:false,vector:{enabled:false},assoc:{enabled:false},gistEnabled:false,compress:false,keepChatlogDays:-1,extractIdleMinutes:0},group:{}};
+  const native=createMemoryStore({getConfig:()=>cfg,hub:{chatLogDays:()=>[],chatLogOf:()=>[]},log:quiet,storage:{load:()=>structuredClone(state),save:next=>state=structuredClone(next)}});
+  await native.tick();assert.equal(state.runs['04:00'],undefined);assert.equal(calls,0);
+  const manual=await native.consolidate();assert.equal(manual.ok,true,'manual operation remains available');
+  t.mock.timers.setTime(Date.parse('2026-11-20T18:00:00+08:00'));await native.tick();assert.equal(state.runs['04:00'],'2026-11-20');
+  cfg.memory.consolidateTimes.push('20:00');t.mock.timers.setTime(Date.parse('2026-11-20T20:00:00+08:00'));await native.tick();assert.equal(state.runs['20:00'],'2026-11-20','another slot is acknowledged but does not start a second consolidation');
+});
+
 test('actual history-vault prompt rebuilds a mixed day from eligible originals and leaves private injection unchanged',{skip:!fs.existsSync(path.join(modules,'history-vault'))},async t=>{
   const {r,p}=policyFixture(t),folder=temporary('native-vault-'),source=path.join(modules,'history-vault');
   const bytes=fs.readFileSync(path.join(source,'index.mjs')),patch=nativePatchManifest().files.find(e=>e.module==='history-vault'&&e.file==='index.mjs'),hash=b=>createHash('sha256').update(b).digest('hex');
