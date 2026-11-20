@@ -1,6 +1,7 @@
 import {completedWindowRound,bindWindow} from './world-window.mjs';
 import {randomUUID} from 'node:crypto';
 import {budget,defaults,synthetic,terminal,clean,timestamp} from './state.mjs';
+import {workHoursAllowed} from './work-hours.mjs';
 
 export const WORLD='mcp__fish-world__';
 export const worldNames=['now','history','find','profile','go','do','say','friends','update','guide'].map(n=>WORLD+'world_'+n);
@@ -98,9 +99,10 @@ export class LifeEngine {
     const plan=l.plans.find(p=>['pending','active'].includes(p.status)&&Number(p.nextAt)>0&&p.nextAt<=now);
     if(!chosen&&plan)chosen={id:plan.id,kind:'plan',bucket:'idle',priority:3,text:JSON.stringify(plan)};
     if(chosen&&working&&['plan','done','arrive'].includes(chosen.kind))chosen={...chosen,bucket:'work',priority:1};
-    if(!chosen&&c.idleEnabled&&!working&&now>=l.nextIdle&&(!long||ends&&ends<=now))chosen={id:'idle',kind:'idle',bucket:'idle',priority:4,text:'闲时观察、照顾身体、继续计划；允许有理由地保持现状。'};
+    if(!chosen&&c.idleEnabled&&workHoursAllowed(c.idleWorkHours,now)&&!working&&now>=l.nextIdle&&(!long||ends&&ends<=now))chosen={id:'idle',kind:'idle',bucket:'idle',priority:4,text:'闲时观察、照顾身体、继续计划；允许有理由地保持现状。'};
     if(!chosen&&long&&now>=l.nextIdle)this.change(x=>{x.nextIdle=ends>now?ends:now+(state?.figure?.asleep?c.sleepMs:c.idleMs);});
     if(!chosen){this.blocked('');return;}
+    if(!['owner','recovery','idle'].includes(chosen.kind)&&!workHoursAllowed(c.activityWorkHours,now))return this.blocked('世界活动不在设置的工作时间，待办保留；主人安排和恢复不受此项限制');
     if(!c.idleEnabled&&chosen.bucket==='idle')return this.blocked('闲时活动已暂停');
     const b=budget(l,now),limit=c[chosen.bucket+'Limit'];
     if(b[chosen.bucket]>=limit){this.blocked(chosen.bucket+' 自动处理受阻：今日额度已用完');this.fault('budget-'+chosen.bucket,'我今天这类自动处理的额度用完了，接下来的事暂时处理不了，先记下来了。');return;}

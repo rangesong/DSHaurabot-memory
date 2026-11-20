@@ -7,11 +7,13 @@ import {defaults} from './state.mjs';
 import {sendShare} from './delivery.mjs';
 const key=v=>String(v||'').replace(/^session-/,'');
 export default {
-  id:'fish-world',name:'鱼的世界',version:"1.1.0",api:1,panel:'panel.js',
+  id:'fish-world',name:'鱼的世界',version:"1.2.1",api:1,panel:'panel.js',
   description:'同人格的事件处理、自主生活、计划续行和正式 QQ 分享。',defaults,
   settings:[
     {key:'backgroundContextEnabled',label:'世界生活有界上下文',type:'switch',hint:'只在安全回合边界换窗；旧日志、身份、额度、计划与投递账本保留。关闭停止后续换窗，继续当前窗口。'},
     {key:'backgroundContextRounds',label:'每窗口已完成生活回合',type:'number',min:8,max:64,step:1,hint:'推荐 16；计完整生活回合，不计工具或模型请求。未确认操作、在途调用或投递期间延后。'},
+    {key:'idleWorkHours',label:'闲时生活工作时间（北京时间）',type:'text',hint:'留空沿用原作息；支持多个跨午夜时段，如 18:00-09:00,12:00-14:00。仅控制新闲时回合，不延后主人安排、到期计划、工作或恢复。'},
+    {key:'activityWorkHours',label:'自动事件与计划工作时间（北京时间）',type:'text',hint:'留空不限制；格式同闲时时间。设置后可能延迟社交、工作与到期计划；主人安排和恢复不受限制。'},
     ...[['chatBodyInjectionEnabled','普通聊天自动提供身体状态'],['chatLocationInjectionEnabled','普通聊天自动提供位置状态'],['autonomy','启用世界自动行动'],['idleEnabled','启用闲时生活'],['sharing','启用 QQ 分享'],['observeOnly','只观察'],['stocks','允许自主证券交易'],['gifts','允许自主赠礼']].map(([key,label])=>({key,label,type:'switch'})),
     ...[['workLimit','工作与门铃每日回合'],['idleLimit','闲时每日回合'],['socialLimit','社交每日回合'],['shareLimit','普通分享每日条数'],['singleSpend','单次消费上限（贝）'],['dailySpend','每日消费上限（贝）']].map(([key,label])=>({key,label,type:'number',min:0,max:10000})),
   ],
@@ -40,7 +42,7 @@ export default {
       deliveryStatus:id=>api.proactive?.statusOf?.(id),
     };
     if(!bridge.fatal)try{engine=new LifeEngine({bridge,host,settings:()=>api.settings?.()||{},authorized:allowed,identity});}catch{bridge.fatal||='自主生活状态初始化失败，已停止自动流程。';}
-    const status=()=>{const {keyId,life,...snapshot}=bridge.snapshot();return {ok:!bridge.fatal,...snapshot,version:"1.1.0",configured:!!keyId,life:engine?.snapshot()||null,wake:!!engine&&allowed()&&engine.cfg.autonomy&&!engine.cfg.observeOnly&&!engine.cfg.stopped};};
+    const status=()=>{const {keyId,life,...snapshot}=bridge.snapshot();return {ok:!bridge.fatal,...snapshot,version:"1.2.1",configured:!!keyId,life:engine?.snapshot()||null,wake:!!engine&&allowed()&&engine.cfg.autonomy&&!engine.cfg.observeOnly&&!engine.cfg.stopped};};
     const writeStatus=()=>{if(!live)return;try{const f=api.dataDir('status.json');writeFileSync(f+'.tmp',JSON.stringify(status(),null,2)+'\n');renameSync(f+'.tmp',f);}catch{api.log.warn('鱼世界状态快照写入失败');}};
     const sync=()=>allowed()&&!engine?.cfg.stopped?bridge.sync():Promise.resolve();
     const ensure=(chat,sessionId)=>{if(!ownerChat(chat)||!api.core.hub.turnSendersAllOwner(sessionId))throw Error('仅当前主人私聊可用');};
@@ -95,7 +97,7 @@ export default {
     api.every(2000,()=>{void sync().catch(()=>{});if(engine)void engine.tick().catch(()=>api.log.warn('鱼世界调度失败，保留运行状态'));},'世界采集和生活调度');
     api.every(10000,writeStatus,'世界状态记录');api.later(1000,()=>{void sync().catch(()=>{});writeStatus();});
     api.onDispose(async()=>{live=false;await engine?.dispose();for(const off of offs.reverse())try{off?.();}catch{}bridge.dispose();});
-    writeStatus();api.log.info('鱼的世界 1.1.0 已加载：持久队列、同人格生活会话、正式 QQ 分享；聊天刷新保持非阻塞。');
+    writeStatus();api.log.info('鱼的世界已加载：持久队列、同人格生活会话、正式 QQ 分享；聊天刷新保持非阻塞。');
     return {status,refresh:sync,control:(action,instruction)=>{if(!allowed())throw Error('模块未启用');engine.control(action,instruction);writeStatus();}};
   }
 };

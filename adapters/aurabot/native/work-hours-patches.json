@@ -1,0 +1,89 @@
+{
+  "schema": 1,
+  "entries": [
+    {
+      "area": "host",
+      "path": "src/bili/duty.js",
+      "before": "b0399d2782b1b479db3a90a0f6ae84229688162df6c4d515cd5db0b6026c468d",
+      "after": "b7097b7af6e2e58096e99981f5078e4d06f4685c8d014a29573e762aa7137903",
+      "hunks": "@@ -2,6 +2,7 @@\n // 定时看别人回她的评论并接着回；你在 QQ 里发链接，她也能点进去看完再聊。看过的、评过的都记成她的经历。\n \n import { dataDir, readJson, writeJson } from '../core/store.js'\n+import { workHoursAllowed } from '../core/work-hours.js'\n import { createBiliApi, findVideoId, parseCookie } from './api.js'\n import { loginSessionKey, recoverLoginPause } from './login-pause.js'\n import { isSessionBackoff } from '../chat/session-backoff.js'\n@@ -477,10 +478,11 @@ export function createBili({ getConfig, hub, memory, log, dsh, api: injected, vi\n     const c = g.bili\n     if (!g.enabled || !c.enabled || hub.systemSessionCooldown?.('bili')) return\n     const h = new Date().getHours()\n-    if (h < g.speakUp.awakeFrom || h >= g.speakUp.awakeTo) return\n+    const awake = h >= g.speakUp.awakeFrom && h < g.speakUp.awakeTo\n     const s = today(load())\n-    if (c.reply && Date.now() - (s.lastReplyCheck || 0) > 20 * 60_000 && (await account()).isLogin) await checkReplies()\n-    if (!hub.systemSessionCooldown?.('bili') && c.autoBrowse && s.runs < c.maxRunsPerDay && Date.now() - (s.lastRun || 0) > c.intervalHours * 3600_000) await run()\n+    if (awake && c.reply && Date.now() - (s.lastReplyCheck || 0) > 20 * 60_000 && (await account()).isLogin) await checkReplies()\n+    const browseTime = c.browseWorkHours ? workHoursAllowed(c.browseWorkHours) : awake\n+    if (!hub.systemSessionCooldown?.('bili') && c.autoBrowse && browseTime && s.runs < c.maxRunsPerDay && Date.now() - (s.lastRun || 0) > c.intervalHours * 3600_000) await run()\n   }\n \n   return {\n"
+    },
+    {
+      "area": "host",
+      "path": "src/features/qzone-social.js",
+      "before": "0888ebe703da3980e2696cc471cf53c09cf7d70c12a22b031f1e23010c553abd",
+      "after": "c3e38ad3216a2b8d38cc8eb50758fe61856cb8272009edaeabfcc997f9980be1",
+      "hunks": "@@ -2,6 +2,7 @@\n // 评论在专用的后台会话里按她的人格写；试运行时只记日志不发。\n \n import { dataDir, readJson, writeJson } from '../core/store.js'\n+import { workHoursAllowed } from '../core/work-hours.js'\n import { isSilence, stripMarkdown, cleanOutboundText } from '../chat/reply.js'\n \n const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`\n@@ -195,7 +196,8 @@ export function createQzoneSocial({ getConfig, onebot, hub, log, memory }) {\n     const c = cfg.qzoneSocial\n     if (!cfg.enabled || !c.enabled) return\n     const h = new Date().getHours()\n-    if (h < cfg.speakUp.awakeFrom || h >= cfg.speakUp.awakeTo) return\n+    const awake = h >= cfg.speakUp.awakeFrom && h < cfg.speakUp.awakeTo\n+    if (!(c.workHours ? workHoursAllowed(c.workHours) : awake)) return\n     if (Date.now() - load().lastRun < c.intervalMin * 60_000) return\n     await run()\n   }\n"
+    },
+    {
+      "area": "host",
+      "path": "src/autotelic/runtime.js",
+      "before": "bb8970925add1dee9b18ee4bc50cb14411a7477dd7ea6c9ea0eff350045c88e3",
+      "after": "9940974090be7e905683ab3421160313b824d215f3d09ba105c6dd54b5a696db",
+      "hunks": "@@ -17,6 +17,7 @@ const TRANSIENT_RE = /冷却|等太久|还没结束/\n import { gatherMaterials, proposeTasks, mergeModelScores, buildScreenPrompt, parseScreenVerdicts, trivialWhy, screenFingerprint } from './engine.js'\n import { createBook } from './book.js'\n import { inQuietHours } from '../purpose/engine.js'\n+import { workHoursAllowed } from '../core/work-hours.js'\n import {\n   reviewDue, buildDailyPage, dreamDue, distillDream, writeReflection, createJournal, dayKey as dayKeyOf,\n } from './reflect.js'\n@@ -259,6 +260,7 @@ export function createRuntime({ settings, cfg = {}, hub = {}, memoryOf = null, p\n   async function tick({ manual = false } = {}) {\n     const s = settings()\n     if (!s.enabled) return { outcome: 'disabled' } // 场景 1：关着不做任何 IO\n+    if (!manual && !workHoursAllowed(s.workHours, now())) return { outcome: 'outside-work-hours' }\n     if (running) { log?.info?.('自驱：上一轮还没结束，这轮跳过'); return { outcome: 'skipped-busy' } }\n     running = true\n     const bk = bookFor()\n"
+    },
+    {
+      "area": "host",
+      "path": "src/modules/autotelic/index.js",
+      "before": "018776d20390785499c74f802276989b678d532a66eabae5759c6d620de0bb56",
+      "after": "2ff9c65729d7ce6483051212ec824c2231a973a15cb08cd64ec38d31cc2ba0cf",
+      "hunks": "@@ -42,6 +42,7 @@ export default {\n     // —— 节奏 ——\n     quietFrom: '23:30', // 安静时段：禁「打扰主人」，不禁「她自己做事」（§4.6）\n     quietTo: '07:30',\n+    workHours: '', // 空值保留现有行为；仅限制自动心跳\n     dailyReviewHour: 23, // 几点出「每日一页」（P2 接线）\n     minBatchForReview: 3, // 攒够几件才评（攒 3 件或满一天，先到者为准）\n     dreamFrom: '03:00', // 「做梦」窗口（离线整理；留空=关闭做梦，P2 接线）\n@@ -68,6 +69,7 @@ export default {\n     { key: 'budgetActionsPerHour', label: '动作数 / 小时', type: 'number', min: 1, max: 120 },\n     { key: 'quietFrom', label: '安静时段 从', type: 'string', hint: 'HH:mm；安静时段只禁「打扰主人」，不禁她自己做事；留空 = 不启用' },\n     { key: 'quietTo', label: '安静时段 到', type: 'string' },\n+    { key: 'workHours', label: '自动工作时间（北京时间）', type: 'string', hint: '留空不限制；可填 18:00-09:00,12:00-14:00；手动运行不受限制。' },\n     { key: 'dailyReviewHour', label: '每日一页（点）', type: 'number', min: 0, max: 23 },\n     { key: 'minBatchForReview', label: '攒几件才评', type: 'number', min: 1, max: 20 },\n     { key: 'dreamFrom', label: '做梦窗口 从', type: 'string', hint: 'HH:mm；留空 = 关闭做梦' },\n"
+    },
+    {
+      "area": "host",
+      "path": "src/core/config.js",
+      "before": "3312d23464df32787a648b1004b3fbae1db29657792c43083475a1ccc4eb443f",
+      "after": "16a638ddfb5a7d4f9d2e898c0338fee515a3d8fbe96299e8a0dac2cea92c0d3f",
+      "hunks": "@@ -189,6 +189,7 @@ export const DEFAULTS = {\n     ownerName: '', // 主人的 B 站昵称：她写 @主人 时 @ 这个号\n     cookie: '', // 由上面几个拼出来给接口用；老配置的整串会自动拆到上面几个里\n     autoBrowse: true, // 定时自己去刷\n+    browseWorkHours: '', // 留空沿用原时段；只限制自动浏览\n     intervalHours: 4, // 多久刷一轮\n     maxRunsPerDay: 3,\n     perRun: 3, // 一轮看几个视频\n@@ -640,12 +641,14 @@ export function normalize(raw) {\n   q.ownerChance = num(q.ownerChance, 0.7, 0, 1)\n   q.maxPerDay = num(q.maxPerDay, 8, 0, BIG)\n   q.intervalMin = num(q.intervalMin, 30, 1, BIG)\n+  q.workHours = typeof q.workHours === 'string' ? q.workHours.slice(0, 200) : ''\n   c.mood.halfLifeHours = num(c.mood.halfLifeHours, 3, 0.1, BIG)\n   c.mood.base = num(c.mood.base, 60, 0, 100)\n   c.mood.judge = bool(c.mood.judge, false)\n   for (const k of ['tts', 'image', 'song', 'asr', 'video']) c.local[k] = bool(c.local[k], false)\n   c.local.videoTimeoutMin = num(c.local.videoTimeoutMin, 20, 1, BIG)\n   const b = c.bili\n+  b.browseWorkHours = typeof b.browseWorkHours === 'string' ? b.browseWorkHours.slice(0, 200) : ''\n   Object.assign(b, splitBiliCookie(b))\n   for (const k of ['enabled', 'autoBrowse', 'comment', 'reply', 'shareToOwner', 'like', 'vision', 'danmakuEnabled', 'autoDanmaku']) b[k] = bool(b[k], DEFAULTS.bili[k])\n   b.visionFrames = Math.round(num(b.visionFrames, 6, 1, 100))\n"
+    },
+    {
+      "area": "host",
+      "path": "client/client.js",
+      "before": "cc04df43b970db2a27dd1cb6b6335643d0feec16267c9de31639fb858af23f32",
+      "after": "3ec0a366b9edd6bfbf3ac31a65916f0d3dda1af691cf5ad6ff416482e24a6570",
+      "hunks": "@@ -2913,6 +2913,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,\n         h(Row, { label: '你的说说互动概率' }, f.percent('qzoneSocial.ownerChance')),\n         h(Row, { label: '每天最多评论', hint: '点赞不算' }, f.range('qzoneSocial.maxPerDay', 0, 30, 1, (v) => v + ' 条')),\n         h(Row, { label: '多久逛一次', hint: '只在「主动搭话」里设的醒着时间内' }, f.range('qzoneSocial.intervalMin', 10, 240, 10, (v) => v + ' 分钟')),\n+        h(Row, { label: '自动互动时间（北京时间）', hint: '留空沿用醒着时间；如 18:00-09:00,12:00-14:00，格式错误会暂停自动互动。' }, f.text('qzoneSocial.workHours', { placeholder: '留空沿用醒着时间' })),\n         h('div', { className: 'ab-flex', style: { marginTop: 10 } },\n           h('span', { className: 'ab-muted ab-small' }, s ? '今天评论了 ' + s.count + ' 条' + (s.lastRun ? '，上次逛是 ' + timeAgo(s.lastRun) : '') : ''),\n           h('div', { className: 'ab-spacer' }),\n@@ -3109,6 +3110,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,\n           NumRow({ label: '单任务步数上限', hint: '失败 2 次也会卡住，不无限重试', k: 'maxSteps', min: 1, max: 32 }),\n           NumRow({ label: '动作数 / 小时', hint: '她动手的次数上限；超了这小时只想想', k: 'budgetActionsPerHour', min: 1, max: 120 }),\n           TimeRow({ label: '安静时段', kf: 'quietFrom', kt: 'quietTo', hint: '只禁打扰你，不禁她做事；清空 = 不启用', clearHint: '这段时间她不吵你' }),\n+          h(Row, { label: '自动工作时间（北京时间）', hint: '留空不限制；如 18:00-09:00,12:00-14:00；只限制自动心跳，手动运行不受影响。' }, f.text('ext.autotelic.workHours', { placeholder: '留空不额外限制' })),\n           NumRow({ label: '每日一页（几点）', hint: '她的自我总结时间', k: 'dailyReviewHour', min: 0, max: 23, suffix: '点' }),\n           NumRow({ label: '攒几件才评', hint: '攒够件数或到点，先到者为准', k: 'minBatchForReview', min: 1, max: 20, suffix: '件' }),\n           TimeRow({ label: '做梦窗口', kf: 'dreamFrom', kt: 'dreamTo', hint: '安静时段最深处做离线整理；清空 = 关闭做梦', clearHint: '到点她会做一次离线整理' }),\n@@ -6844,6 +6846,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,\n         ),\n         h(Card, { title: '怎么刷', desc: '只在「主动搭话」里设的醒着时间内刷。' },\n           h(Row, { label: '定时自己去刷' }, f.sw('bili.autoBrowse')),\n+          h(Row, { label: '自动刷视频时间（北京时间）', hint: '留空沿用原作息；如 18:00-09:00,12:00-14:00。手动看视频与评论回复不受此项限制。' }, f.text('bili.browseWorkHours', { placeholder: '留空不额外限制' })),\n           h(Row, { label: '多久刷一轮' }, f.range('bili.intervalHours', 1, 24, 1, (v) => v + ' 小时')),\n           h(Row, { label: '每天最多刷' }, f.range('bili.maxRunsPerDay', 0, 12, 1, (v) => v + ' 轮')),\n           h(Row, { label: '一轮看几个视频' }, f.range('bili.perRun', 1, 6, 1, (v) => v + ' 个')),\n@@ -7037,6 +7040,7 @@ body[data-ds-dark-theme] .ab-root,.ab-root.ab-dark{--ab-shadow:0 1px 2px rgba(0,\n         ),\n         h(Card, { title: '怎么刷', desc: '只在「主动搭话」里设的醒着时间内自己刷。主人在 QQ 里让ta「去刷会儿抖音」也行。' },\n           h(Row, { label: '定时自己去刷' }, f.sw('douyin.autoBrowse')),\n+          h(Row, { label: '自动刷视频时间（北京时间）', hint: '留空沿用醒着时间；如 18:00-09:00,12:00-14:00，格式错误暂停自动刷。私信和手动看视频不受影响。' }, f.text('ext.douyin.browseWorkHours', { placeholder: '留空沿用醒着时间' })),\n           h(Row, { label: '多久刷一轮' }, f.range('douyin.intervalHours', 1, 24, 1, (v) => v + ' 小时')),\n           h(Row, { label: '每天最多刷' }, f.range('douyin.maxRunsPerDay', 0, 12, 1, (v) => v + ' 轮')),\n           h(Row, { label: '一轮看几个' }, f.range('douyin.perRun', 1, 10, 1, (v) => v + ' 个')),\n"
+    },
+    {
+      "area": "modules",
+      "path": "douyin/index.mjs",
+      "before": "da3367671ae8acd1aa328cf8a8ee31210d366083bc0989e42c28c2846ab1c292",
+      "after": "6a16e58fe427bd0dba70847a328b86be02529f82c200b5e2d8e8e72c01709db6",
+      "hunks": "@@ -11,12 +11,12 @@ const { profileToolVisible, profilePermits } = __lib('chat/access.js')\n export default {\n   id: 'douyin',\n   name: '刷抖音',\n-  version: '2.3.5',\n+  version: '2.3.6',\n   api: 1,\n   description: '用专用浏览器刷抖音：看推荐、点赞评论，把好玩的视频分享给主人，也能看别人发来的抖音链接。',\n   tab: 'douyin',\n-  defaults: { autoShareEnabled: true },\n-  settings: [{ key: 'autoShareEnabled', label: '自动分享给主人', type: 'switch', hint: '关闭后保留浏览、点赞和评论；主人明确要求的手动分享保留。' }],\n+  defaults: { autoShareEnabled: true, browseWorkHours: '' },\n+  settings: [{ key: 'autoShareEnabled', label: '自动分享给主人', type: 'switch', hint: '关闭后保留浏览、点赞和评论；主人明确要求的手动分享保留。' }, { key: 'browseWorkHours', label: '自动刷视频时间（北京时间）', type: 'text', hint: '留空沿用原作息；可填 18:00-09:00,12:00-14:00。只限制自动刷，私信与手动看视频不受影响。' }],\n   setup(api) {\n     const { hub, http } = api.core\n     // 主人的抖音号只由「核对」写入（面板存配置时不能直接改 secUid）\n"
+    },
+    {
+      "area": "modules",
+      "path": "douyin/lib/duty.mjs",
+      "before": "202634d5b96132d736a60b9354ce66c2a50d7d0deea6252ab9691c8522e0aae4",
+      "after": "1d3074cb6e0fc392eb3c205b3d7ca98cfd8dd5f436f7d8e13e86f2093c2d7e15",
+      "hunks": "@@ -18,6 +18,7 @@ import { execFileSync } from 'node:child_process'\n import { join } from 'node:path'\n import { createBrowser } from './browser.mjs'\n import { createSite, findAwemeId, resolveShort, digestOf, videoLink } from './site.mjs'\n+import { workHoursAllowed } from './work-hours.mjs'\n \n const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`\n const between = (lo, hi) => Math.floor(lo + Math.random() * (Math.max(lo, hi) - lo + 1))\n@@ -824,13 +825,14 @@ export function createDouyin({ getConfig, setOwner, hub, memory, log, site: inje\n     }\n     if (!g.enabled || busy) return\n     const h = new Date(now()).getHours()\n-    if (h < g.speakUp.awakeFrom || h >= g.speakUp.awakeTo) return\n+    const awake = h >= g.speakUp.awakeFrom && h < g.speakUp.awakeTo\n     const s = load()\n-    if (c.ownerDm && ownerDy() && now() - (s.lastDmCheck || 0) >= c.dmPollMinutes * 60_000) {\n+    if (awake && c.ownerDm && ownerDy() && now() - (s.lastDmCheck || 0) >= c.dmPollMinutes * 60_000) {\n       await checkOwnerDms('定时')\n       return\n     }\n-    if (!c.autoBrowse) return\n+    const hours = settings().browseWorkHours\n+    if (!c.autoBrowse || !(hours ? workHoursAllowed(hours, now()) : awake)) return\n     if (s.runs >= c.maxRunsPerDay || s.watched >= c.maxWatchPerDay) return\n     const due = s.nextDueAt || (s.lastRun ? s.lastRun + c.intervalHours * 3600_000 : 0)\n     if (now() < due) return\n"
+    },
+    {
+      "area": "modules",
+      "path": "douyin/module.json",
+      "before": "fe2e9872325f3cfceda43f728d6691526dfe4b8db446a32d7e524fa585bcdf0b",
+      "after": "97fc38914f26cad7c38a56403f19304ed3e4cdb2830c0132b5c0cf96363f50dc",
+      "hunks": "@@ -1,7 +1,7 @@\n {\n   \"id\": \"douyin\",\n   \"name\": \"刷抖音\",\n-  \"version\": \"2.3.5\",\n+  \"version\": \"2.3.6\",\n   \"description\": \"用专用浏览器刷抖音：看推荐、点赞评论，把好玩的视频分享给主人，也能看别人发来的抖音链接。\",\n   \"category\": \"platform\",\n   \"tags\": [\n"
+    },
+    {
+      "area": "modules",
+      "path": "douyin/README.md",
+      "before": "9fae3efd437876515177ff9cc6bdf99649dc5e5e4e622d1fde91e31a3f933540",
+      "after": "6fb642030262a4b2af5292be1c1094c2a14c5ba1e629cb81959aebf7fdcc57c6",
+      "hunks": "@@ -1,5 +1,7 @@\n # 刷抖音\n \n+自动刷视频可独立填写北京时间工作时段，如 `18:00-09:00,12:00-14:00`；留空沿用原来的醒着时间，格式错误暂停自动刷。只限制新启动的自动浏览，主人手动浏览和抖音私信不受此设置影响；正在进行的浏览不强行中断。\n+\n 用专用浏览器刷抖音：看推荐、点赞、评论，把好玩的视频分享给主人，也能看别人发来的抖音链接。\n \n 在面板「抖音」页登录并打开。开关关闭时也可以扫码登录；登录动作进行中及最近一次登录动作后的五分钟内，定时任务不会关闭登录浏览器。各项权限在面板「权限」页，默认仅主人。会启动本机 Chromium 内核浏览器并访问 `douyin.com`。\n"
+    },
+    {
+      "area": "host",
+      "path": "src/core/work-hours.js",
+      "before": null,
+      "after": "d89e76e5d140a6caeeeaf9377a46196568f12adbe7b352b53daede5593ffb077",
+      "content": "// Automatic background work only. Empty preserves the existing schedule.\n// Times are Beijing wall time; ranges may cross midnight and are end-exclusive.\nexport function workHoursAllowed(value, now = Date.now()) {\n  if (value == null || value === '') return true;\n  if (typeof value !== 'string' || value.length > 200) return false;\n  const ranges = value.split(/[,，]/).map(x => x.trim());\n  if (!ranges.length || ranges.length > 8 || ranges.some(x => !x)) return false;\n  const intervals = [];\n  for (const range of ranges) {\n    const m = /^(\\d{1,2}):(\\d{2})\\s*[-–~]\\s*(\\d{1,2}):(\\d{2})$/.exec(range);\n    if (!m) return false;\n    const [a,b,c,d] = m.slice(1).map(Number);\n    if (a > 23 || b > 59 || c > 23 || d > 59) return false;\n    intervals.push([a * 60 + b,c * 60 + d]);\n  }\n  const timestamp = Number(now instanceof Date ? now.getTime() : now);\n  if (!Number.isFinite(timestamp)) return false;\n  const t = new Date(timestamp + 8 * 3600000);\n  const minute = t.getUTCHours() * 60 + t.getUTCMinutes();\n  return intervals.some(([start,end]) => start === end || (start < end ? minute >= start && minute < end : minute >= start || minute < end));\n}\n"
+    },
+    {
+      "area": "modules",
+      "path": "douyin/lib/work-hours.mjs",
+      "before": null,
+      "after": "d89e76e5d140a6caeeeaf9377a46196568f12adbe7b352b53daede5593ffb077",
+      "content": "// Automatic background work only. Empty preserves the existing schedule.\n// Times are Beijing wall time; ranges may cross midnight and are end-exclusive.\nexport function workHoursAllowed(value, now = Date.now()) {\n  if (value == null || value === '') return true;\n  if (typeof value !== 'string' || value.length > 200) return false;\n  const ranges = value.split(/[,，]/).map(x => x.trim());\n  if (!ranges.length || ranges.length > 8 || ranges.some(x => !x)) return false;\n  const intervals = [];\n  for (const range of ranges) {\n    const m = /^(\\d{1,2}):(\\d{2})\\s*[-–~]\\s*(\\d{1,2}):(\\d{2})$/.exec(range);\n    if (!m) return false;\n    const [a,b,c,d] = m.slice(1).map(Number);\n    if (a > 23 || b > 59 || c > 23 || d > 59) return false;\n    intervals.push([a * 60 + b,c * 60 + d]);\n  }\n  const timestamp = Number(now instanceof Date ? now.getTime() : now);\n  if (!Number.isFinite(timestamp)) return false;\n  const t = new Date(timestamp + 8 * 3600000);\n  const minute = t.getUTCHours() * 60 + t.getUTCMinutes();\n  return intervals.some(([start,end]) => start === end || (start < end ? minute >= start && minute < end : minute >= start || minute < end));\n}\n"
+    }
+  ]
+}
