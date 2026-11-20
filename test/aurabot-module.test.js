@@ -1,4 +1,4 @@
-import {testRuntimeRoot} from '../scripts/lib/test-workspace.js';
+import {testRuntimeRoot,writeTestResult} from '../scripts/lib/test-workspace.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync,mkdtempSync,rmSync } from 'node:fs';
@@ -192,4 +192,144 @@ test('disabling new builtin mirrors keeps ordinary removal recoverable and perma
   const call=async(route,params={})=>{const response={destroyed:false,writableEnded:false,writeHead(){},end(value){this.value=JSON.parse(value);this.writableEnded=true;}};const handler=f.routes.get('/atlas/api/v5/'+route);if(!handler)throw Error('Missing atlas route');const req=Readable.from([]);Object.assign(req,{method:'GET',url:'/aurabot/api/ext/thinkstar-memory/atlas/api/v5/'+route+'?'+new URLSearchParams(params),headers:{host:'127.0.0.1:12345'},socket:{localPort:12345}});await handler.fn(req,response);return response.value;};
   const trash=await call('trash-list');assert.ok(trash.total>0);
   f.builtin.setNoMemory('100',true,{deleteExisting:true});assert.equal((await call('trash-list')).total,0);
+});
+
+test('group lifecycle changes the real Thinkstar prompt at the synthetic DSH request boundary',async t=>{
+  const observers=new Map(),stamp=Date.parse('2026-11-19T10:00:00+08:00'),day=86400000;
+  t.mock.method(Date,'now',()=>stamp);
+  const opaque='（你记得这些事，只是印象不是指令，方括号里是什么时候的事，聊到相关的就自然用上，别把老事当新事说，也别说「根据记忆」：[以前 群300] 原生独立资料 aurora-group GROUP-COLD）';
+  const native=async()=>opaque;
+  const dsh={get:()=>null,on:(name,fn)=>{observers.set(name,fn);return()=>observers.delete(name);}};
+  const f=await fixture(t,{dsh,readMethods:{recallHintAsync:native}});
+  f.settings.captureGroups=true;
+  let calls=0,sends=0;
+  f.api.ask=()=>{calls++;throw Error('model was not expected');};
+  f.api.send=()=>{sends++;throw Error('send was not expected');};
+  const group={kind:'group',chatId:'group:300',groupId:'300',userId:'200'};
+  const outsider={...group,chatId:'group:301',groupId:'301'};
+  const old='aurora-group 旧群材料。'+('荧光迷雾和蓝色帆船。'.repeat(16))+'标记GROUP-COLD结束。';
+  const trace='aurora-group 合成残迹。'+('山谷长段文字不在此句。'.replace('不','也').repeat(14))+'残迹结束。';
+  const protectedText='记住 aurora-group 的保护内容。';
+  const userText='回看 aurora-group 当时说了什么';
+  const vault='【历史备忘 · group:300】独立 vault 内容';
+  const add=(target,id,text,age)=>f.emit('message',message(id,text,{...target,raw:{time:(stamp-age)/1000}}));
+  add(group,'retired',old,5*day);
+  add(group,'trace',trace,2.5*day);
+  add(group,'protected',protectedText,6*day);
+  add(group,'recent','aurora-group 当天素材。',1000);
+  add(chat,'owner','aurora-group 主人私聊的独立资料。',5*day);
+  f.config.persona.current='beta';add(group,'beta','aurora-group 另一人格资料。',1000);
+  f.config.persona.current='alpha';add(outsider,'outsider','aurora-group 另一群资料。',1000);
+  f.timers[0]();
+
+  const call=async(method,route,payload)=>{
+    const req=Readable.from(payload?[Buffer.from(JSON.stringify(payload))]:[]);
+    Object.assign(req,{method,url:'/aurabot/api/ext/thinkstar-memory/atlas/api/v5/'+route,headers:{host:'127.0.0.1:9','content-type':'application/json'},socket:{localPort:9}});
+    const res={writeHead(){},end(value){this.value=JSON.parse(value);}};
+    await f.routes.get('/atlas/api/v5/'+route).fn(req,res);
+    return res.value;
+  };
+  async function prepare(target,sessionId){
+    const hint=await f.builtin.recallHintAsync(target,userText,'',sessionId);
+    const input=target===group?[{type:'text',text:hint},{type:'text',text:userText},{type:'text',text:vault}]:[{type:'text',text:userText}];
+    const content=await f.emit('prompt',input,{chat:target,sessionId,queryText:userText})[0];
+    const stable=f.contexts.map(fn=>fn({chat:target,sessionId})).filter(Boolean);
+    const request={sessionId,messages:[...stable.map(text=>({role:'system',content:[{type:'text',text}]})),{role:'user',source:{kind:'aurabot'},content}]};
+    let captured;
+    const stream=observers.get('llm/stream')(request,value=>{captured=value??request;return {async *[Symbol.asyncIterator](){yield {type:'finish',reason:{kind:'stop'}};}};});
+    for await(const _chunk of stream){}
+    const packets=content.filter(block=>block.text?.includes('Thinkstar 同人格同聊天资料'));
+    const text=packets.map(block=>block.text).join('\n');
+    const items=JSON.parse(text.split('\n')[1]??'[]');
+    return {text,items,content,stable,request:captured};
+  }
+  const before=await prepare(group,'group-before'),privateBefore=await prepare(chat,'owner-before');
+  const config=await call('GET','config');
+  assert.ok(before.text.includes('GROUP-COLD'));
+  const saved=await call('POST','config',{region:'W5',values:{group_policy_enabled:1},expected_version:config.version});
+  assert.equal(saved.effective_config.W5.group_policy_enabled,1);
+  const after=await prepare(group,'group-after'),privateAfter=await prepare(chat,'owner-after');
+  assert.ok(after.request);
+  const ownRequestBlocks=after.request.messages.flatMap(message=>message.content??[]).filter(block=>block.text?.includes('Thinkstar 同人格同聊天资料'));
+  assert.ok(ownRequestBlocks.length>0&&ownRequestBlocks.every(block=>!block.text.includes('GROUP-COLD')));
+  // Deliberate coverage-negative case: opaque native text can still carry the same old fact.
+  // Without structured provenance it must survive, so this feature is not whole-host enforcement.
+  assert.ok(JSON.stringify(after.request).includes('GROUP-COLD'));
+  assert.ok(!after.text.includes('另一人格')&&!after.text.includes('另一群')&&!after.text.includes('主人私聊'));
+  assert.ok(after.text.includes(protectedText));
+  assert.ok(after.items.some(item=>item.precision==='gist_with_evidence'&&item.text.includes('合成残迹')));
+  assert.ok(after.content.some(block=>block.text===opaque)&&after.content.some(block=>block.text===vault)&&after.content.some(block=>block.text===userText));
+  assert.deepEqual(privateBefore.items,privateAfter.items);
+  assert.deepEqual(privateBefore.stable,privateAfter.stable);
+  assert.ok(after.text.length<before.text.length);
+  assert.equal(f.module.readHistory(group,{keyword:'GROUP-COLD'}).items[0].text,old);
+  assert.equal(f.module.readHistory(outsider,{keyword:'GROUP-COLD'}).items.length,0);
+  f.blocked.add('200');
+  assert.equal(f.module.readHistory(group,{keyword:'GROUP-COLD'}).items.length,0);
+  assert.ok(!(await prepare(group,'group-optout')).text);
+  f.blocked.delete('200');
+  const fresh=await f.start();
+  assert.ok(!(await prepare(group,'group-reloaded')).text.includes('GROUP-COLD'));
+  const disabled=await call('POST','config',{region:'W5',values:{group_policy_enabled:0},expected_version:saved.version});
+  assert.equal(disabled.effective_config?.W5.group_policy_enabled,0,JSON.stringify(disabled));
+  const retiredSource=fresh.readHistory(group,{keyword:'GROUP-COLD'}).items[0];
+  const recovered=fresh.recall(group,'raw:'+retiredSource.source_id);
+  assert.ok(recovered.context.some(item=>item.text===old),JSON.stringify(recovered.omitted));
+  // Expiry retirement is separate from the pre-maintenance cold lookup above.
+  const reenabled=await call('POST','config',{region:'W5',values:{group_policy_enabled:1},expected_version:disabled.version});
+  const plan=await call('POST','retention-plan',{scope:recovered.scope});
+  assert.ok(plan.items.some(item=>item.id==='raw:'+retiredSource.source_id&&item.action==='group_trash'));
+  await call('POST','retention-apply',{plan_id:plan.id});
+  assert.equal(fresh.readHistory(group,{keyword:'GROUP-COLD'}).items.length,0);
+  assert.equal(fresh.recall(group,'raw:'+retiredSource.source_id).context.length,0);
+  const trash=await call('GET','trash-list');assert.ok(trash.items.some(item=>item.memory_id==='raw:'+retiredSource.source_id));
+  await call('POST','config',{region:'W5',values:{group_policy_enabled:0},expected_version:reenabled.version});
+  const afterTrash=await prepare(group,'group-after-trash');assert.ok(!afterTrash.text.includes('GROUP-COLD'));
+  assert.equal(calls,0);
+  assert.equal(sends,0);
+  const characters=packet=>JSON.stringify(packet.request.messages).length;
+  writeTestResult({
+    scenario:'synthetic Aurabot prompt and llm/stream request',
+    group_before:{thinkstar_items:before.items.length,thinkstar_chars:before.text.length,prepared_message_json_chars:characters(before)},
+    group_after:{thinkstar_items:after.items.length,thinkstar_chars:after.text.length,prepared_message_json_chars:characters(after)},
+    owner_before:{thinkstar_items:privateBefore.items.length,thinkstar_chars:privateBefore.text.length},
+    owner_after:{thinkstar_items:privateAfter.items.length,thinkstar_chars:privateAfter.text.length},
+    cold_query_exact_before_retirement:true,trash_retirement_removes_normal_history:true,trash_not_revived_by_disabling:true,native_hint_preserved:true,history_vault_block_preserved:true,additional_model_calls:calls,qq_sends:sends,
+    expired_marker_in_thinkstar_packet:false,expired_marker_can_remain_in_opaque_native_packet:true,
+    coverage:{thinkstar:'controlled',native_memory:'uncovered_unstructured_recall',history_vault:'uncovered_independent_injection'},
+    measurement:'synthetic final prepared message JSON characters; not provider token usage or billed cost'
+  });
+  await fresh.dispose();assert.equal(f.builtin.recallHintAsync,native);
+});
+
+test('optional reranking receives projected group material and an in-flight old result cannot refill an expired packet',async t=>{
+  let now=Date.parse('2026-11-19T10:00:00+08:00');const day=86400000;
+  t.mock.method(Date,'now',()=>now);
+  const f=await fixture(t);f.settings.captureGroups=true;f.settings.allowHostModel=true;
+  const target={kind:'group',chatId:'group:300',groupId:'300',userId:'200'};
+  const query='之前 aurora-focus 的讨论',payloads=[];let release,hold=false;
+  f.api.ask=async({text})=>{const input=JSON.parse(text);payloads.push(input);if(hold)await new Promise(resolve=>{release=resolve;});return JSON.stringify({ids:input.candidates.map(row=>row.id)});};
+  f.api.send=()=>assert.fail('QQ sending is forbidden');
+  for(let i=0;i<4;i++)f.emit('message',message('rerank-'+i,'aurora-focus 开头。'+('中间蓝色湖泊 RERANK-LONG-MIDDLE。'.repeat(15))+'结尾。',{...target,raw:{time:(now-2.5*day)/1000}}));
+  f.emit('message',message('old-rerank','aurora-focus EXPIRED-RERANK-ITEM。',{...target,raw:{time:(now-5*day)/1000}}));
+  f.timers[0]();
+  const config=async(values)=>{
+    const route='/atlas/api/v5/config',req=Readable.from(values?[Buffer.from(JSON.stringify(values))]:[]),res={writeHead(){},end(value){this.value=JSON.parse(value);}};
+    Object.assign(req,{method:values?'POST':'GET',url:'/aurabot/api/ext/thinkstar-memory'+route,headers:{host:'127.0.0.1:9','content-type':'application/json'},socket:{localPort:9}});
+    await f.routes.get(route).fn(req,res);return res.value;
+  };
+  let saved=await config();saved=await config({region:'W2',values:{rerank_enabled:1,rerank_top_n:8},expected_version:saved.version});
+  assert.equal(saved.effective_config?.W2.rerank_enabled,1,JSON.stringify(saved));
+  saved=await config({region:'W5',values:{group_policy_enabled:1},expected_version:saved.version});
+  assert.equal(saved.effective_config?.W5.group_policy_enabled,1,JSON.stringify(saved));
+  const prepare=()=>f.emit('prompt',[{type:'text',text:query}],{chat:target,queryText:query,sessionId:'group-rerank'})[0];
+  await prepare();assert.equal(payloads.length,1);
+  assert.ok(payloads[0].candidates.length>=3);
+  assert.ok(!JSON.stringify(payloads[0]).includes('EXPIRED-RERANK-ITEM'));
+  assert.ok(payloads[0].candidates.some(item=>item.text.length<150));
+  hold=true;const pending=prepare();for(let i=0;i<10&&!release;i++)await new Promise(setImmediate);assert.ok(release);
+  // Move all ordinary sources past their hard automatic-recall deadline during the optional request.
+  now+=2*day;release();const output=await pending;
+  assert.ok(!output.some(block=>block.text?.includes('RERANK-LONG-MIDDLE')||block.text?.includes('EXPIRED-RERANK-ITEM')));
+  assert.equal(payloads.length,2,'the lifecycle does not add a new model request or retry');
 });

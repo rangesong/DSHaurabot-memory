@@ -118,7 +118,7 @@ export function mapAurabot(capture) {
       const p = part(scopeOf(m.chatId, 'aurabot:legacy-memory-unattributed'));
       const at = stamp(m.saidAt) ?? stamp(m.at);
       const sourceId = addSource(p, { kind: `legacy-${collection}`, file: memoryFile, locator: `${collection === 'item' ? 'items' : 'gists'}:${entry.native_id}`,
-        key: entry.native_id, value: m, text: m.text, role: 'assistant', at, speaker: 'aurabot:memory-summary' });
+        key: entry.native_id, value: m, text: m.text, role: 'assistant', at, speaker: 'aurabot:memory-summary', extra: {original_message_at:stamp(m.saidAt)} });
       const experience = m.source === 'event' || m.source === 'diary' || m.kind === 'seen';
       const region_ids = [...new Set(['M1', experience ? 'M2' : m.about ? 'M3' : 'M2', ...(m.chatId ? ['M4'] : [])])];
       const id = addMemory(p, ['legacy', collection, entry.native_id], {

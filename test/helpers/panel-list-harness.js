@@ -7,7 +7,9 @@ export function panelListHarness(source){
   useEffect(fn,deps){const i=cursor++,old=slots[i];if(!old||deps.some((x,n)=>!Object.is(x,old.deps[n]))){slots[i]={deps};effects.push(()=>{old?.cleanup?.();slots[i].cleanup=fn();});}},
   read(name,params){return new Promise(resolve=>requests.push({name,params,resolve}));},
  };
- const code=source.slice(source.indexOf('function LazyList('),source.indexOf('function ParameterEditor('));
+ const start=source.indexOf('function LazyList('),end=source.indexOf('\nfunction ',start+1);
+ if(start<0||end<0)throw Error('LazyList component boundary missing');
+ const code=source.slice(start,end);
  const component=vm.runInNewContext('('+code+')',context);
  return {requests,render(scope){cursor=0;const tree=component({name:'recalls',scope,render:x=>h('p',null,x.label)});for(const f of effects.splice(0))f();return tree;},close(){for(const s of slots)s?.cleanup?.();}};
 }

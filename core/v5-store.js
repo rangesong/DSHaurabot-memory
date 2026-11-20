@@ -62,7 +62,7 @@ export class V5Store {
       CREATE TRIGGER IF NOT EXISTS lookup_fts_delete AFTER DELETE ON lookup BEGIN DELETE FROM lookup_fts_done WHERE id=old.id; DELETE FROM lookup_fts WHERE rowid=old.rowid; END;`);this.fts=true;}catch{this.fts=false;}
   }
   sql(query) { if(!this.statements.has(query))this.statements.set(query,this.db.prepare(query)); return this.statements.get(query); }
-  tx(action) { if(this.writing)return action(); this.db.exec('BEGIN IMMEDIATE');this.writing=true;try{const result=action();this.db.exec('COMMIT');return result;}catch(error){this.db.exec('ROLLBACK');throw error;}finally{this.writing=false;} }
+  tx(action) { if(this.writing)return action(); this.db.exec('BEGIN IMMEDIATE');this.writing=true;try{const result=action();this.db.exec('COMMIT');return result;}catch(error){this.db.exec('ROLLBACK');this.protectionRevision=(this.protectionRevision??0)+1;throw error;}finally{this.writing=false;} }
   meta(key,fallback=null) { const r=this.sql('SELECT json FROM meta WHERE key=?').get(key);return r?JSON.parse(r.json):structuredClone(fallback); }
   setMeta(key,value) { this.sql('INSERT INTO meta VALUES(?,?) ON CONFLICT(key) DO UPDATE SET json=excluded.json').run(key,JSON.stringify(value)); }
   scope(value) { this.sql('INSERT INTO scopes VALUES(?,?) ON CONFLICT(id) DO UPDATE SET json=excluded.json').run(value.id,JSON.stringify(value)); }
@@ -80,7 +80,8 @@ export class V5Store {
   putVersion(memory){this.sql('INSERT OR REPLACE INTO versions VALUES(?,?,?)').run(memory.id,memory.revision,this.codec.encode(memory));}
   putMemory(memory,text=null,{history=true}={}) {
     return this.tx(()=>{
-    const json=this.codec.encode(memory),previous=this.sql('SELECT json FROM memories WHERE id=?').get(memory.id);
+    const json=this.codec.encode(memory),previous=this.sql('SELECT json,protection FROM memories WHERE id=?').get(memory.id);
+    if(json!==previous?.json&&(['P0','P1'].includes(memory.protection)||['P0','P1'].includes(previous?.protection)))this.protectionRevision=(this.protectionRevision??0)+1;
     if(previous&&previous.json!==json)this.sql('UPDATE versions SET json=? WHERE id=? AND json=?').run(previous.json,memory.id,CURRENT_VERSION_JSON);
     this.sql(`INSERT INTO memories VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET kind=excluded.kind,label=excluded.label,layer=excluded.layer,protection=excluded.protection,validity=excluded.validity,occurred=excluded.occurred,updated=excluded.updated,json=excluded.json`).run(memory.id,memory.scope,memory.kind,memory.label,memory.layer,memory.protection,memory.validity,memory.occurred_at,memory.updated_at,json);
     if(history)this.sql('INSERT OR REPLACE INTO versions VALUES(?,?,?)').run(memory.id,memory.revision,CURRENT_VERSION_JSON);

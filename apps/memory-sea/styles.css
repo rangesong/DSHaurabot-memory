@@ -88,3 +88,7 @@ main.left-collapsed>.sidebar,main.right-collapsed>.inspector{display:none}
 .atlas-page .atlas-status .scene-legend{position:static;display:flex;margin:14px 0;gap:8px;font-size:9px;max-width:none}
 .atlas-page .atlas-status .galaxy-credit{position:static;margin-top:14px;text-align:left;font-size:9px}
 @media(max-width:600px){body.atlas-page{overflow:hidden}.atlas-page .view-modes{right:12px;top:16px}.atlas-page .stage .scene-tools-left{top:20px}}
+
+/* Group policy uses real switches and day inputs, not range-slider geometry. */
+.param-row input[type="checkbox"]{width:18px;height:18px;padding:0;appearance:auto;vertical-align:middle;cursor:pointer}
+.param-row input[type="number"]{width:110px;height:32px;padding:5px 9px;border:1px solid #45617b;border-radius:5px;background:#14243a;color:#d2e6f8;font-size:12px}

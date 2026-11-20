@@ -15,12 +15,12 @@ export const ATLAS_STATIC = new Map([
   ['/assets/milky-way-background.jpg',['assets/milky-way-background.jpg','image/jpeg']],
 ]);
 
-export const ATLAS_API_ROUTES=['trash-detail','trash-list','trash-restore','memory-discard','evaluation-run','evaluation-report','archive-export','context-report','fact-index','fact-write','fact-restore','archive-index','archive-read','archive-build','remember-source','person-memory','overview','model-status','graph','central-rules','directory','detail','events','trace','config','recalls','governance','model-check','semantic-extract','model-chat','model-review','model-display-ack','ingest','query','associate','principle','central-rule','deepen','revise','feedback','method-outcome','outcome','rollback-config','retention-plan','retention-apply','consolidate','live-poll'];
+export const ATLAS_API_ROUTES=['trash-detail','trash-list','trash-restore','memory-discard','evaluation-run','evaluation-report','archive-export','context-report','fact-index','fact-write','fact-restore','archive-index','archive-read','archive-build','remember-source','person-memory','overview','model-status','graph','central-rules','directory','detail','events','trace','config','recalls','governance','group-lifecycle','model-check','semantic-extract','model-chat','model-review','model-display-ack','ingest','query','associate','principle','central-rule','deepen','revise','feedback','method-outcome','outcome','rollback-config','retention-plan','retention-apply','group-cleanup','native-policy-status','native-policy-probe','consolidate','live-poll'];
 
-ATLAS_API_ROUTES.push('console-layout','console-region','console-impressions','console-activity','console-diagnostics','dialogue-feedback','dialogue-review','semantic-status','semantic-index','self-reflections','strategy-trials','strategy-revoke');
+ATLAS_API_ROUTES.push('console-layout','console-region','console-impressions','console-activity','console-diagnostics','dialogue-feedback','dialogue-review','semantic-status','semantic-index','self-reflections','strategy-trials','strategy-revoke','implicit-learning');
 
 /** Standalone loopback checks remain enabled unless a host mounts EVERY route behind its panel gate. */
-export function createMemorySeaHandler({app=defaultApp,provider=null,runtime=null,liveReader=null,modelService=null,evaluationService=null,basePath='',hosted=false,integration=null,assetOverrides={},assertActive=()=>{},assertMutationAllowed=()=>{},signal=null,transformHtml=value=>value}={}) {
+export function createMemorySeaHandler({app=defaultApp,provider=null,runtime=null,liveReader=null,modelService=null,evaluationService=null,groupCleanup=null,nativePolicyStatus=()=>({}),nativePolicyProbe=null,basePath='',hosted=false,integration=null,assetOverrides={},assertActive=()=>{},assertMutationAllowed=()=>{},signal=null,transformHtml=value=>value}={}) {
   return async (req, res) => {
     const cancel=()=>req.destroy();signal?.addEventListener('abort',cancel,{once:true});
     const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
@@ -51,12 +51,14 @@ export function createMemorySeaHandler({app=defaultApp,provider=null,runtime=nul
           if(route==='console-activity')return send(200,runtime.dialogue.list({...params,category:'interaction'}));
           if(route==='console-diagnostics')return send(200,diagnostics(runtime,params));
           if(route==='dialogue-feedback')return send(200,runtime.dialogue.feedbackList(params));
+          if(route==='implicit-learning')return send(200,runtime.implicitLearning.list(params));
           if(route==='strategy-trials')return send(200,runtime.strategyLearning.list(params));
           if(route==='self-reflections')return send(200,runtime.selfReflection.list(params));
           if(route==='semantic-status')return send(200,runtime.semantic.status());
           if(route==='overview'){const overview=runtime.overview(),model=modelService?.status()??null;return send(200,{...overview,capabilities:{...overview.capabilities,semantic_model:!!model?.configured,actual_model_context_window:integration?.context_window??'local_pool_estimate_no_external_host_adapter'},model,integration});}
           if(route==='model-status')return send(200,modelService?.status(p.get('refresh')==='1')??{configured:false});
           if(route==='context-report')return send(200,runtime.contextReport(params));
+          if(route==='native-policy-status')return send(200,nativePolicyStatus());
           if(route==='evaluation-report')return send(200,evaluationService?.report()??{available:false});
           if(route==='trash-detail')return send(200,runtime.trash.detail(params));
           if(route==='trash-list')return send(200,runtime.trashList(params));
@@ -82,6 +84,7 @@ export function createMemorySeaHandler({app=defaultApp,provider=null,runtime=nul
           if(route==='config')return send(200,runtime.getConfig());
           if(route==='recalls'){runtime.requireScope(params.scope??'all',true);return send(200,{items:runtime.store.recalls(params.scope??'all',20).map(recallPresentation)});}
           if(route==='governance')return send(200,runtime.governance());
+          if(route==='group-lifecycle')return send(200,runtime.groupLifecycleStatus(params.scope));
         }else if(req.method==='POST'){
           if(!String(req.headers['content-type']??'').startsWith('application/json'))return send(415,{error:'JSON_REQUIRED',message:'仅接受本机 JSON 操作'});
           const chunks=[];let size=0;for await(const chunk of req){const bytes=Buffer.isBuffer(chunk)?chunk:Buffer.from(chunk);size+=bytes.length;if(size>4*1024*1024){send(413,{error:'TOO_LARGE',message:'单次输入超过 4MB'});return;}chunks.push(bytes);}const raw=Buffer.concat(chunks).toString('utf8');
@@ -107,7 +110,7 @@ export function createMemorySeaHandler({app=defaultApp,provider=null,runtime=nul
           if(route==='archive-build')return send(200,await runtime.archive.build({...body,use_model:body.use_model===true,client:modelService?.client}));
           if(route==='remember-source')return send(200,runtime.rememberSource(body));
           if(route==='ingest'){const receipt=runtime.ingest({...body,process:false});send(200,receipt);if(!hosted)setImmediate(()=>runtime.processJobs({scope:receipt.scope}));return;}
-          if(route==='query')return send(200,runtime.query(body));
+          if(route==='query')return send(200,runtime.query({...body,on_demand:body.on_demand===true}));
           if(route==='associate')return send(200,runtime.associate(body));
           if(route==='principle')return send(200,runtime.proposeCentralRule(body));
           if(route==='central-rule')return send(200,runtime.writeCentralRule(body));
@@ -119,6 +122,8 @@ export function createMemorySeaHandler({app=defaultApp,provider=null,runtime=nul
           if(route==='config'){const result=runtime.updateConfig(body);runtime.dialogue.activity({category:'config',title:'修改了'+String(body.region)+'参数',detail:{region:body.region,values:body.values,version:result.version}});return send(200,result);}
           if(route==='rollback-config'){const result=runtime.rollbackConfig(body);runtime.dialogue.activity({category:'config',title:'回退了参数配置',detail:{restored_version:body.version,version:result.version}});return send(200,result);}
           if(route==='retention-plan')return send(200,runtime.retentionPlan(body));
+          if(route==='native-policy-probe'&&nativePolicyProbe)return send(200,nativePolicyProbe());
+          if(route==='group-cleanup'&&groupCleanup)return send(200,groupCleanup.run(body));
           if(route==='retention-apply')return send(200,runtime.applyRetention(body));
           if(route==='consolidate')return send(200,runtime.processJobs({scope:body.scope==='all'?null:body.scope??null}));
           if(route==='live-poll')return send(200,liveReader?await liveReader.poll():{status:'not_connected'});

@@ -83,6 +83,7 @@ export class V5Trash {
       for(const version of versions)r.store.putVersion(version);
       memory.revision=current.revision+1;memory.updated_at=r.clock();
       delete memory.attributes.trash_id;delete memory.attributes.precision_backup_id;
+      for(const key of memory.attributes.native_policy_keys??[])r.store.sql('DELETE FROM meta WHERE key=?').run('native-group-retired:'+key);
       if(memory.storage==='gist_only'&&sources.length)memory.storage='gist_with_evidence';
       if(memory.attributes.fact_key){const fact=memory.attributes.fact_key,pointer=r.store.meta('fact-current:'+hash(JSON.stringify([scope,fact.subject,fact.field])));if(pointer?.id!==memory.id){memory.validity='superseded';memory.review='needs_review';}}
       r.store.putMemory(memory,lookup??'');

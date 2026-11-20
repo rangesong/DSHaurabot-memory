@@ -18,8 +18,9 @@ export class V5Archive {
   }
   sources(scope,{day=null,month=null,filter=null}={}){
     this.r.requireScope(scope);
+    const lifecycle=this.r.groupLifecycle();
     return this.r.store.sql('SELECT id FROM sources WHERE scope=? AND (json IS NOT NULL OR packed IS NOT NULL) ORDER BY occurred,sequence,id').all(scope)
-      .map(row=>this.r.store.getSource(row.id)).filter(source=>source&&(!day||archiveDay(source.occurred_at)===day)&&(!month||archiveDay(source.occurred_at).startsWith(month))&&(!filter||filter(source)));
+      .filter(row=>!lifecycle.retiredSource(row.id)).map(row=>this.r.store.getSource(row.id)).filter(source=>source&&(!day||archiveDay(source.occurred_at)===day)&&(!month||archiveDay(source.occurred_at).startsWith(month))&&(!filter||filter(source)));
   }
   current(scope,level,period){return this.r.store.meta(`archive-current:${scope}:${level}:${period}`);}
   unitMemory(unit){const memory=unit?.memory_id?this.r.store.getMemory(unit.memory_id):null;return memory&&memory.validity==='current'?memory:null;}
@@ -33,7 +34,7 @@ export class V5Archive {
     });
     const months=unique(days.filter(day=>day.day!=='unknown').map(day=>day.day.slice(0,7))).map(month=>{const unit=this.current(scope,2,month),memory=this.unitMemory(unit),children=days.filter(day=>day.day.startsWith(month)),input=children.slice().sort((a,b)=>a.day.localeCompare(b.day)).map(day=>{const d=this.unitMemory(this.current(scope,1,day.day));return {id:d?.id??day.day,text:`${day.day}：${d?.body??'摘要待整理'}`};}),safe=memory?.source_refs.every(id=>visible.has(id))&&children.every(day=>day.status!=='pending')&&unit?.input_digest===digest(input);return {month,days:children.length,summary:safe?memory.body:'',memory_id:safe?memory.id:null,status:safe?unit.status:'pending'};});
     const calls=this.r.store.meta('archive-model-budget:'+archiveDay(this.r.clock()),{used:0});
-    return {scope,l0:sources.length,l1:days.filter(day=>['complete','empty'].includes(day.status)).length,l2:months.filter(month=>['complete','empty'].includes(month.status)).length,days,months,raw_retention:'lossless_until_explicit_erasure',model_calls_today:calls.used,model_daily_limit:this.r.config.W5.archive_daily_calls};
+    return {scope,l0:sources.length,l1:days.filter(day=>['complete','empty'].includes(day.status)).length,l2:months.filter(month=>['complete','empty'].includes(month.status)).length,days,months,raw_retention:'lossless_except_group_expiry_to_recoverable_trash_or_explicit_erasure',model_calls_today:calls.used,model_daily_limit:this.r.config.W5.archive_daily_calls};
   }
   read({scope,level=0,day=null,month=null,keyword='',after=0,offset=0,limit=40,filter=null}={}){
     level=Number(level);limit=Number(limit);offset=Number(offset);after=Number(after);
@@ -49,7 +50,8 @@ export class V5Archive {
   }
   memo(scope,{filter=null,limit=3}={}){
     this.r.requireScope(scope);const units=this.r.store.sql("SELECT json FROM meta WHERE key LIKE ? ORDER BY key DESC LIMIT ?").all(`archive-current:${scope}:1:%`,Math.max(1,Math.min(8,limit)));
-    const days=units.map(row=>JSON.parse(row.json)).filter(unit=>unit.status==='complete').map(unit=>({unit,memory:this.unitMemory(unit)})).filter(({memory})=>memory&&memory.source_refs.every(id=>{const source=this.r.store.getSource(id);return source&&(!filter||filter(source));}));
+    const lifecycle=this.r.groupLifecycle();
+    const days=units.map(row=>JSON.parse(row.json)).filter(unit=>unit.status==='complete').map(unit=>({unit,memory:this.unitMemory(unit)})).filter(({memory})=>memory&&memory.source_refs.every(id=>{const source=this.r.store.getSource(id);return source&&!lifecycle.retiredSource(id)&&(!filter||filter(source));}));
     return days.length?'（这个聊天里之前的原话的归档目录，仅是摘要导航；需要数字、承诺或细节时用 thinkstar_history 读取 L0 原文。）\n'+days.map(({unit,memory})=>`${unit.period}：${memory.body}`).join('\n'):'';
   }
 

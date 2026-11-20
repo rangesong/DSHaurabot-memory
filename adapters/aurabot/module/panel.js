@@ -44,17 +44,27 @@ function LazyList({name,scope,params={},render,interval=0}){
     h('div',{style:{display:'flex',gap:8,flexWrap:'wrap',marginTop:10}},h(ui.Btn,{small:true,onClick:()=>setRefresh(x=>x+1)},'刷新'),
       offset?h(ui.Btn,{small:true,onClick:()=>setOffset(Math.max(0,offset-20))},'上一页'):null,data.has_more?h(ui.Btn,{small:true,onClick:()=>setOffset(data.next_offset??offset+20)},'下一页'):null)));
 }
-function ParameterEditor({region,keys=null,defaults,onSaved,toast}){
+function GroupPolicyStatus({scope,version,toast}){
+  const [status,setStatus]=useState(null);
+  useEffect(()=>{let live=true;setStatus(null);read('group-lifecycle',{scope}).then(value=>{if(live)setStatus(value);}).catch(error=>{if(live)toast(error.message);});return()=>{live=false;};},[scope,version]);
+  if(!status)return h('p',{className:'ab-muted'},'正在读取群聊策略状态…');
+  return h(React.Fragment,null,
+    h('p',null,status.enabled?'群聊专用期限已启用 · v'+status.version:'继承原有策略 · v'+status.version),
+    status.enabled?h('p',null,'对象数：待整理 '+status.pending+' · 已整理 '+status.processed+' · 受保护 '+status.protected+' · 无法判断 '+status.unknown+' · 已到期待转移 '+status.expired+' · 废弃库 '+status.retired):null,
+    status.enabled?Object.entries(status.blocked??{}).map(([reason,count])=>h('p',{key:reason,className:'ab-muted'},(status.blocked_labels?.[reason]??reason)+'：'+count)):null,
+    h('p',{className:'ab-muted'},(status.enabled?'Thinkstar 自动召回受控。':'Thinkstar 尚未启用群聊专用期限。')+(Object.values(status.coverage??{}).filter(value=>value==='covered_with_conservative_holds').length===2?'原生 memory 与 history-vault 已接入；无法对齐的旧画像／摘要暂时保留。':'原生 memory 与 history-vault 尚未全部接入，请检查配套适配状态。')+'对象数量不是节省 token 的估算。'));
+}
+function ParameterEditor({region,keys=null,exclude=[],defaults,onSaved,toast}){
   const [config,setConfig]=useState(null),[values,setValues]=useState({}),[busy,setBusy]=useState(false);
   useEffect(()=>{let live=true;read('config').then(c=>{if(live){setConfig(c);setValues({...c.effective_config[region]});}}).catch(e=>toast(e.message));return()=>{live=false;};},[region]);
   if(!config)return h('p',{className:'ab-muted'},'正在读取参数…');
-  return h('div',null,h('p',{className:'ab-small ab-muted'},'这里调整全局默认参数；查看范围用于筛选内容，个人条件规则按各自范围生效。'),...Object.entries(config.params[region]??{}).filter(([key])=>!keys||keys.includes(key)).map(([key,def])=>{
+  return h('div',null,h('p',{className:'ab-small ab-muted'},'这里调整全局默认参数；查看范围用于筛选内容，个人条件规则按各自范围生效。'),...Object.entries(config.params[region]??{}).filter(([key])=>!exclude.includes(key)&&(!keys||keys.includes(key))).map(([key,def])=>{
     const help=config.param_help[region]?.[key]??{};
     return h('div',{key,style:{marginBottom:14}},h('label',{style:{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}},h('span',null,def[0]),
-      h('input',{type:'number',className:'ab-input',style:{width:110},min:def[1],max:def[2],step:def[3],value:values[key]??'',onChange:e=>setValues(v=>({...v,[key]:Number(e.target.value)}))})),
+      key==='group_policy_enabled'?h('input',{type:'checkbox',role:'switch',checked:values[key]===1,onChange:e=>setValues(v=>({...v,[key]:e.target.checked?1:0}))}):h('input',{type:'number',className:'ab-input',style:{width:110},min:def[1],max:def[2],step:def[3],value:values[key]??'',onChange:e=>setValues(v=>({...v,[key]:Number(e.target.value)}))})),
       h(Fold,{title:'含义与调节影响'},h('p',null,help.meaning),h('p',null,help.effect),h('p',null,'调高：'+(help.higher??'')),h('p',null,'调低：'+(help.lower??'')),help.note?h('p',{className:'ab-muted'},help.note):null));
   }),h('div',{style:{display:'flex',gap:8,flexWrap:'wrap'}},
-    h(ui.Btn,{small:true,disabled:busy,onClick:async()=>{setBusy(true);try{const allowed=Object.fromEntries(Object.entries(values).filter(([key])=>config.params[region]?.[key]&&(!keys||keys.includes(key))));const next=await write('config',{region,values:allowed,expected_version:config.version});setConfig(next);setValues({...next.effective_config[region]});onSaved?.();toast('参数已保存');}catch(e){toast(e.message);}finally{setBusy(false);}}},busy?'正在保存…':'保存参数'),
+    h(ui.Btn,{small:true,disabled:busy,onClick:async()=>{setBusy(true);try{const allowed=Object.fromEntries(Object.entries(values).filter(([key])=>config.params[region]?.[key]&&!exclude.includes(key)&&(!keys||keys.includes(key))));const next=await write('config',{region,values:allowed,expected_version:config.version});setConfig(next);setValues({...next.effective_config[region]});onSaved?.();toast('参数已保存');}catch(e){toast(e.message);}finally{setBusy(false);}}},busy?'正在保存…':'保存参数'),
     h(ui.Btn,{small:true,onClick:()=>setValues({...defaults?.[region]})},'恢复默认值'),
     h(ui.Btn,{small:true,onClick:async()=>{try{const c=await read('config');setConfig(c);setValues({...c.effective_config[region]});}catch(e){toast(e.message);}}},'重新读取'),
     config.history?.length?h(ui.Btn,{small:true,disabled:busy,onClick:async()=>{try{const c=await write('rollback-config',{version:config.history.at(-1).version,expected_version:config.version});setConfig(c);setValues({...c.effective_config[region]});onSaved?.();}catch(e){toast(e.message);}}},'回退上次修改'):null));
@@ -63,6 +73,15 @@ function MemoryLink({item,focus}){
   return h(React.Fragment,null,h('div',null,item.label??item.text??'相关记忆'),
     h('p',{className:'ab-small ab-muted'},[item.condition,item.review,item.layer,item.source_count!=null?'来源 '+item.source_count:null].filter(Boolean).join(' · ')),
     item.id?h(ui.Btn,{small:true,onClick:()=>focus({memory_id:item.id,scope:item.scope})},'查看原话与详情'):null);
+}
+function ImplicitRule({item,focus,toast}){
+  const [current,setCurrent]=useState(item),[busy,setBusy]=useState(false);
+  useEffect(()=>setCurrent(item),[item]);
+  const act=async action=>{setBusy(true);try{const result=await write('central-rule',{scope:current.scope,id:current.id,expected_revision:current.revision,action,reason:'在反馈与学习栏目手动'+(action==='pause'?'暂停':'撤回')});setCurrent({...current,revision:result.memory.revision,layer:result.memory.layer,status:result.memory.attributes.central_rule.status,rule:result.memory.attributes.central_rule,effective:false});toast(action==='pause'?'已暂停，不会被夜间自动恢复':'已撤回，不会被后台重新启用');}catch(e){toast(e.message);}finally{setBusy(false);}};
+  return h(Fold,{title:current.label},h('p',null,'状态：'+({candidate:'经验积累中',active:current.stage==='verified'?'后续反馈已支持':'内隐试用中',paused:'已暂停',revoked:'已撤回'}[current.status]??current.status)),
+    h('p',null,'适用情境：'+current.condition+'；独立依据 '+current.independent+' 次 / '+current.days+' 个自然日；后续验证 '+current.outcomes+' 次'),h('p',null,current.reason),h('p',null,current.body),
+    h(MemoryLink,{item:current,focus}),current.rule?.origin==='feedback_maturation'?h('div',{style:{display:'flex',gap:8}},current.status==='active'?h(ui.Btn,{small:true,disabled:busy,onClick:()=>act('pause')},'暂停这条准则'):null,current.status!=='revoked'?h(ui.Btn,{small:true,disabled:busy,onClick:()=>act('revoke')},'撤回这条准则'):null):null,
+    h(Fold,{title:'成熟与验证依据'},json({validation:current.rule?.validation??null,history:current.history})));
 }
 function FeedbackReview({item,toast}){
   const [meaning,setMeaning]=useState(item.interpretation.meaning),[reason,setReason]=useState(''),[saved,setSaved]=useState(false);
@@ -104,7 +123,12 @@ return function ThinkstarPanel({settings={},save=async()=>{},toast}){
   const regionGroup=id=>h(Fold,{key:id,title:{memory:'记忆组织',work:'工作中枢',store:'记忆系统'}[id],onOpen:load,reveal:navigation?.group===id?navigation.at:null},error?h('p',{className:'ab-note'},error):null,selector,
     !layout?h('p',null,'正在读取栏目…'):layout.groups.find(g=>g.id===id).regions.map(region=>h(Fold,{key:region.id,title:region.name,reveal:navigation?.region===region.id?navigation.at:null},h('p',null,region.function),
       h(ui.Btn,{small:true,onClick:()=>focus({region_id:region.id})},'聚焦此处'),
-      h(Fold,{title:'参数调节',reveal:navigation?.region===region.id?navigation.at:null},region.parameter_region?h('p',{className:'ab-muted'},'这些留存区域共用统一底座权重；压缩和维护参数位于海马体。'):null,h(ParameterEditor,{region:region.parameter_region??region.id,defaults:layout.defaults,onSaved:changed,toast})),
+      h(Fold,{title:'参数调节',reveal:navigation?.region===region.id?navigation.at:null},region.parameter_region?h('p',{className:'ab-muted'},'这些留存区域共用统一底座权重；压缩和维护参数位于海马体。'):null,h(ParameterEditor,{region:region.parameter_region??region.id,exclude:region.id==='W5'?layout.config.group_policy_keys:[],defaults:layout.defaults,onSaved:changed,toast}),
+      region.id==='W5'?h(Fold,{title:'群聊专用压缩与遗忘'},
+        h('p',null,'仅普通群聊。重要来源和未完事项继续保护，私聊沿用原策略。按原消息起算，每天为连续 24 小时，日期显示北京时间。到期即停止自动召回，夜间移入 rubbishmemory；移入后请从垃圾桶查看或恢复。关闭策略不会自动恢复已移入的内容。'),
+        h(GroupPolicyStatus,{scope,version:layout.config.version,toast}),
+        h(ParameterEditor,{key:layout.config.version,region:'W5',keys:layout.config.group_policy_keys,defaults:layout.defaults,onSaved:changed,toast}),
+        h('a',{href:atlasUrl,target:'_blank',rel:'noopener noreferrer'},'在星图的巩固与容量治理中预览处理计划')):null),
       h(Fold,{title:id==='memory'?'目录与关联记忆':'相关记忆'},h(LazyList,{name:'console-region',scope,params:{region:region.id},render:item=>h(MemoryLink,{item,focus})})),
       id==='work'?h(Fold,{title:'对应中枢规则'},h(LazyList,{name:'central-rules',scope,params:{region:region.id},render:item=>h(MemoryLink,{item,focus})})):null)));
   return h(React.Fragment,null,
@@ -117,7 +141,8 @@ return function ThinkstarPanel({settings={},save=async()=>{},toast}){
       h(Fold,{title:'反馈理解与修订'},h(LazyList,{name:'dialogue-feedback',scope,render:item=>h(FeedbackReview,{item,toast})})),
       h(Fold,{title:'分类与关联历史'},h(LazyList,{name:'dialogue-feedback',scope,params:{include_inactive:'1'},render:item=>h(Fold,{title:when(item.occurred_at)+' · '+item.text.slice(0,55)},h('p',null,'分类状态：'+({active:'有效反馈',not_feedback:'普通对话，已排除',unlinked:'原轮次关联需核对'}[item.status]??item.status)),h('p',null,item.interpretation.label),json(item.history))})),
       h(Fold,{title:'自省策略与效果验证'},h('p',null,'自省发现问题 → 条件回放 → 小幅试用 → 后续反馈验证；效果变差自动撤回。回放通过不代表真实回复已经改善。'),h(LazyList,{name:'strategy-trials',scope,render:item=>h(Fold,{title:when(item.created_at)+' · '+item.problem},h('p',null,item.status_label),h('p',null,'适用情境：'+item.condition+'；'+({detail_level:'回答细致度',followup_pressure:'追问压力'}[item.param]??'表达参数')+'：'+item.baseline+' → '+item.value),h('p',null,'后续明确反馈：'+item.outcomes.length+'次'),h(ui.Btn,{small:true,onClick:async()=>{try{await write('strategy-revoke',{scope:item.scope,id:item.id});toast('已撤回，请重新展开查看记录');}catch(e){toast(e.message);}}},'撤回此策略'),h(Fold,{title:'依据与验证记录'},json({replay:item.replay,outcomes:item.outcomes,history:item.history})))}),layout?h(ParameterEditor,{region:'W5',keys:['self_strategy_enabled','strategy_min_evidence','strategy_trial_feedback'],defaults:layout.defaults,onSaved:changed,toast}):null),
-      h(Fold,{title:'学习参数'},layout?h(ParameterEditor,{region:'W3',keys:['feedback_learning_rate','implicit_min_evidence','feedback_window_minutes','learning_step_cap','feedback_immediate_review'],defaults:layout.defaults,onSaved:changed,toast}):null),
+      h(Fold,{title:'经验成熟与内隐准则'},h('p',null,'经验积累 → 来源与独立性检查 → 夜间进入内隐试用 → 后续新反馈验证。准则只在对应情境影响表达；暂停或撤回后不会自动恢复。'),h(LazyList,{name:'implicit-learning',scope,render:item=>h(ImplicitRule,{item,focus,toast})})),
+      h(Fold,{title:'学习参数'},layout?h(ParameterEditor,{region:'W3',keys:['auto_implicit_enabled','auto_implicit_min_days','feedback_learning_rate','implicit_min_evidence','feedback_window_minutes','learning_step_cap','feedback_immediate_review'],defaults:layout.defaults,onSaved:changed,toast}):null),
       h(Fold,{title:'后台复核与夜间归纳'},h('p',null,'当前互动的后台复核不阻塞聊天；与夜间归纳共用每日调用上限。批量记忆整理仍在夜间。'),layout?h(ParameterEditor,{region:'W5',keys:['learning_rate','feedback_model_calls'],defaults:layout.defaults,onSaved:changed,toast}):null)),
     h(Fold,{title:'向量检索',onOpen:load},h('p',null,'用本机文本语义模型寻找换了说法的旧事，与关键词、人物和原话依据共同检索。新内容保留原话，批量索引在夜间建立。'),
       h(Fold,{title:'检索参数'},layout?h(ParameterEditor,{region:'W2',keys:['vector_enabled','vector_min_score','vector_top_k','semantic'],defaults:layout.defaults,onSaved:changed,toast}):null),

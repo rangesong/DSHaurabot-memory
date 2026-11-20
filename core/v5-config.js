@@ -57,9 +57,9 @@ export const hashId = (scope,id) => `${encodeURIComponent(scope)}|${id}`;
 
 Object.assign(DEFAULT_CONFIG.W2,{recall_items:6,association_weight:.12,vector_enabled:1,vector_min_score:.52,vector_top_k:12,rerank_enabled:0,rerank_top_n:8,rerank_timeout_ms:1800});
 Object.assign(PARAMS.W2,{recall_items:['每轮可选记忆数',1,24,1],association_weight:['关系联想权重',0,.5,.025],vector_enabled:['本地语义召回',0,1,1],vector_min_score:['语义相似度门槛',.3,.95,.01],vector_top_k:['语义候选数',2,40,1],rerank_enabled:['按需模型重排',0,1,1],rerank_top_n:['重排候选数',3,16,1],rerank_timeout_ms:['重排等待上限／毫秒',500,8000,100]});
-Object.assign(DEFAULT_CONFIG.W3,{implicit_min_evidence:3,feedback_window_minutes:30,learning_step_cap:.12,feedback_immediate_review:1});
+Object.assign(DEFAULT_CONFIG.W3,{auto_implicit_enabled:1,auto_implicit_min_days:2,implicit_min_evidence:3,feedback_window_minutes:30,learning_step_cap:.12,feedback_immediate_review:1});
 Object.assign(PARAMS.W3,{feedback_immediate_review:['当前互动后台复核',0,1,1]});
-Object.assign(PARAMS.W3,{implicit_min_evidence:['隐式反馈独立经历门槛',2,12,1],feedback_window_minutes:['反馈关联窗口／分钟',1,120,1],learning_step_cap:['表达自动调整上限',0,.25,.01]});
+Object.assign(PARAMS.W3,{auto_implicit_enabled:['经验自动成熟为内隐准则',0,1,1],auto_implicit_min_days:['成熟依据至少跨越的自然日数',1,14,1],implicit_min_evidence:['隐式反馈独立经历门槛',2,12,1],feedback_window_minutes:['反馈关联窗口／分钟',1,120,1],learning_step_cap:['表达自动调整上限',0,.25,.01]});
 Object.assign(DEFAULT_CONFIG.W5,{semantic_batch:24,feedback_model_calls:2});
 Object.assign(PARAMS.W5,{semantic_batch:['夜间语义索引批次',1,100,1],feedback_model_calls:['每日反馈归纳模型上限',0,10,1]});
 
@@ -72,3 +72,13 @@ Object.assign(PARAMS.W5,{self_start_hour:['自主学习开始时／北京时间'
 
 Object.assign(DEFAULT_CONFIG.W5,{self_strategy_enabled:1,strategy_min_evidence:2,strategy_trial_feedback:3});
 Object.assign(PARAMS.W5,{self_strategy_enabled:['夜间自省策略试用',0,1,1],strategy_min_evidence:['发现问题的独立反馈数',2,12,1],strategy_trial_feedback:['效果验证所需明确反馈数',3,12,1]});
+
+export const GROUP_POLICY_KEYS = ['group_policy_enabled','group_recent_days','group_trace_after_days','group_low_value_exit_days','group_ordinary_trace_exit_days'];
+Object.assign(DEFAULT_CONFIG.W5,{group_policy_enabled:0,group_recent_days:1,group_trace_after_days:2,group_low_value_exit_days:3,group_ordinary_trace_exit_days:4});
+Object.assign(PARAMS.W5,{
+  group_policy_enabled:['启用群聊专用期限',0,1,1],
+  group_recent_days:['完整近期记忆／天',1,365,1],
+  group_trace_after_days:['普通内容进入残迹／天',1,365,1],
+  group_low_value_exit_days:['低价值移入废弃库／天',1,730,1],
+  group_ordinary_trace_exit_days:['普通残迹移入废弃库／天',1,730,1],
+});

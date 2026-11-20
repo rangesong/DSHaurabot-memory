@@ -31,6 +31,7 @@ export class V5SelfReflection{
   }
   list({scope='all',limit=20,offset=0}={}){this.r.requireScope(scope,true);limit=Math.min(40,Math.max(1,Number(limit)||20));offset=Math.max(0,Number(offset)||0);const rows=this.r.store.sql("SELECT json FROM self_reflections WHERE (?='all' OR scope=?) ORDER BY created DESC LIMIT ? OFFSET ?").all(scope,scope,limit+1,offset).map(x=>JSON.parse(x.json));return {items:rows.slice(0,limit),has_more:rows.length>limit,next_offset:offset+Math.min(limit,rows.length)};}
   async run({scope,client,enabled=()=>true,allowSource=()=>true,execute,maintenance_complete=false,day=previousChinaDay(this.r.clock())}={}){
+    const requested=allowSource;allowSource=source=>!!source&&!this.r.groupLifecycle().retiredSource(source.id)&&requested(source);
     if(this.busy||!enabled()||!maintenance_complete||!this.r.maintenanceWindow().allowed||!client?.status().configured)return {status:'deferred'};
     this.r.requireScope(scope);if(!/^\d{4}-\d{2}-\d{2}$/.test(day))throw Error('Invalid reflection day');
     const schedule=this.schedule(scope,day);if(!schedule.ready)return {status:schedule.status,reused:!!schedule.last_id,id:schedule.last_id,next_due_at:schedule.next_due_at,attempted:schedule.attempted};

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { PARAMS,REGIONS,RULE_PARAMS } from './v5-config.js';
+import {automaticImplicit} from './v5-implicit-learning.js';
 
 const fail=(message,code='INVALID_INPUT')=>{throw Object.assign(new Error(message),{code});};
 const unique=items=>[...new Set(items)];
@@ -9,9 +10,10 @@ const keywords=value=>unique(String(value??'').split(/[,，、\n]/).map(s=>s.tri
 export function centralRuleStatus(r,m){
   const rule=m.attributes.central_rule;
   if(!rule)return {effective:false,reason:'尚未纳入中枢'};
-  if(typeof rule.review_source!=='string'||!Array.isArray(rule.keywords)||!rule.keywords.length||rule.keywords.some(k=>typeof k!=='string'||k.length<2||k.length>40))return {effective:false,reason:'缺少本机核对或适用条件'};
-  const review=r.store.getSource(rule.review_source),definition=PARAMS[rule.region]?.[rule.param];
-  if(review?.scope!==m.scope||review?.provenance?.system!=='thinkstar'||review?.provenance?.kind!=='explicit_feedback'||!RULE_PARAMS[rule.region]?.includes(rule.param)||!definition||!Number.isFinite(rule.value)||rule.value<definition[1]||rule.value>definition[2]||!Array.isArray(rule.keywords)||!rule.keywords.length)return {effective:false,reason:'缺少本机核对或规则参数无效'};
+  if(automaticImplicit(m)){const proof=r.implicitLearning.proof(m);if(!proof.valid)return {effective:false,reason:proof.reason};}
+  else if(typeof rule.review_source!=='string'||!Array.isArray(rule.keywords)||!rule.keywords.length||rule.keywords.some(k=>typeof k!=='string'||k.length<2||k.length>40))return {effective:false,reason:'缺少本机核对或适用条件'};
+  const review=typeof rule.review_source==='string'?r.store.getSource(rule.review_source):null,definition=PARAMS[rule.region]?.[rule.param];
+  if(!automaticImplicit(m)&&(review?.scope!==m.scope||review?.provenance?.system!=='thinkstar'||review?.provenance?.kind!=='explicit_feedback'||!RULE_PARAMS[rule.region]?.includes(rule.param)||!definition||!Number.isFinite(rule.value)||rule.value<definition[1]||rule.value>definition[2]||!Array.isArray(rule.keywords)||!rule.keywords.length))return {effective:false,reason:'缺少本机核对或规则参数无效'};
   if(rule.status!=='active')return {effective:false,reason:rule.status==='paused'?'已暂停':'已撤回'};
   if(m.validity!=='current'||m.review==='needs_review'||m.revision!==rule.approved_revision)return {effective:false,reason:'内容或依据变化，须重新核对'};
   if(!m.source_refs.length||m.source_refs.some(id=>!r.store.getSource(id)))return {effective:false,reason:'必要来源不可用'};
@@ -23,8 +25,8 @@ export function resolveCentralRules(r,scope,text,region=null){
   if(!scope||scope==='all')return [];
   const candidates=r.store.sql("SELECT json FROM memories WHERE scope=? AND layer='implicit'").all(scope).map(row=>r.store.decodeMemory(row.json));
   const query=normalize(text);
-  return candidates.filter(m=>centralRuleStatus(r,m).effective&&(!region||m.attributes.central_rule.region===region)&&m.attributes.central_rule.keywords.some(k=>query.includes(normalize(k))))
-    .sort((a,b)=>a.attributes.central_rule.activated_at-b.attributes.central_rule.activated_at||a.id.localeCompare(b.id));
+  return candidates.filter(m=>centralRuleStatus(r,m).effective&&(!region||m.attributes.central_rule.region===region)&&(automaticImplicit(m)?r.implicitLearning.matches(m,text):m.attributes.central_rule.keywords.some(k=>query.includes(normalize(k)))))
+    .sort((a,b)=>Number(automaticImplicit(b))-Number(automaticImplicit(a))||a.attributes.central_rule.activated_at-b.attributes.central_rule.activated_at||a.id.localeCompare(b.id));
 }
 
 export function centralRules(r,{scope='all',region=null}={}){

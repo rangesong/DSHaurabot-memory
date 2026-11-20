@@ -1,0 +1,182 @@
+{
+  "schema": 1,
+  "policy_version": "thinkstar-group-preparation/1",
+  "files": [
+    {
+      "module": "history-vault",
+      "file": "index.mjs",
+      "before_sha256": "363edb882e4b7ac39408cc63bd7920baef8dc3c11b6d091952f371ec0bc6d1ea",
+      "after_sha256": "b0293f02ecd964e76ebe94e762f55c45e32c2273d1a6dc2ff00ed49d40d8d40d",
+      "operations": [
+        {
+          "find": "    function memoFor(chatId, injectDays) {",
+          "replace": "    // Rebuild mixed day navigation from individually checked L0 rows; never reuse\n    // an opaque old summary as a way around a source-level expiry decision.\n    const preparationStatus = () => ({ version: 'thinkstar-group-preparation/1', connected: typeof api.use('thinkstar-memory')?.nativePreparation === 'function' })\n    function prepareLines(items, chatId, manual = false) {\n      const policy = api.use('thinkstar-memory')?.nativePreparation\n      return typeof policy === 'function' ? policy({ path: 'vault.lines', items, chat: { chatId }, manual }) : null\n    }\n    const policyLines = db.prepare('SELECT id,t,chatId,day,dir,who,uid,text FROM vault_lines WHERE chatId=? AND day=? ORDER BY t,id')\n    function memoFor(chatId, injectDays) {"
+        },
+        {
+          "find": "    function read(chatId, { month, day, keyword, lineLimit = 60 } = {}) {",
+          "replace": "    function readUnfiltered(chatId, { month, day, keyword, lineLimit = 60 } = {}) {"
+        },
+        {
+          "find": "    /** 把 read() 的结果渲染成给她看的文字",
+          "replace": "    function read(chatId, options = {}) {\n      const original = readUnfiltered(chatId, options), gate = prepareLines([], chatId, true)\n      if (!String(chatId).startsWith('group:') || !gate?.applies) return original\n      const clean = s => String(s || '').replace(/[%_]/g, '')\n      const query = db.prepare(\"SELECT id,t,chatId,day,dir,who,uid,text FROM vault_lines WHERE chatId=? AND day LIKE ? AND text LIKE ? AND id>? ORDER BY id LIMIT 1000\")\n      const lines = [], limit = Math.min(200, Math.max(1, Number(options.lineLimit) || 60)); let cursor = 0\n      for (let page=0; page<100 && lines.length<limit; page++) {\n        const rows=query.all(chatId, '%'+clean(options.day || options.month)+'%', '%'+clean(options.keyword)+'%', cursor)\n        if (!rows.length) break\n        const result=prepareLines(rows, chatId, true)\n        if (!Array.isArray(result?.items)) throw new Error('Thinkstar vault manual policy unavailable')\n        lines.push(...result.items.slice(0, limit-lines.length));cursor=rows.at(-1).id\n        if (rows.length<1000) break\n      }\n      return {months:[],days:[],lines,policy:'retired_sources_excluded_no_rubbishmemory_read'}\n    }\n\n    /** 把 read() 的结果渲染成给她看的文字"
+        },
+        {
+          "find": "      const body = rows.map((d) => `${d.day} ${d.abstract}`).join('\\n')",
+          "replace": "      const gate = prepareLines([], chatId)\n      let body\n      if (String(chatId).startsWith('group:') && gate?.applies) {\n        const projected = []\n        for (const day of rows) {\n          const lines = policyLines.all(chatId, day.day)\n          const material = lines.length ? lines.map(row => ({ ...row, role: row.dir === 'out' ? 'assistant' : 'user' })) : [{ id: 'day:' + day.day, chatId, text: day.abstract, policyOpaque: true }]\n          const result = prepareLines(material, chatId)\n          if (result?.version !== 'thinkstar-group-preparation/1' || !Array.isArray(result.items)) throw new Error('Thinkstar vault policy unavailable')\n          if (result.items.length) projected.push(day.day + ' ' + result.items.map(row => row.thinkstar_precision ? '【残迹】' + row.text : row.text).join('；'))\n        }\n        body = projected.join('\\n')\n        if (!body) return ''\n      } else body = rows.map((d) => `${d.day} ${d.abstract}`).join('\\n')"
+        },
+        {
+          "find": "    log.info('跨会话历史库就绪：三层存储 + 分层读取')",
+          "replace": "    log.info('跨会话历史库就绪：三层存储 + 分层读取')\n    return { preparationPolicyStatus: preparationStatus, previewPreparation: prepareLines,\n      retirementSources: ({before,after=0,limit=200}) => {\n        const items = db.prepare(\"SELECT id,t,chatId,day,dir,who,uid,text FROM vault_lines WHERE id>? AND t<? AND chatId LIKE 'group:%' ORDER BY id LIMIT ?\").all(Number(after)||0,before,Math.max(1,Math.min(200,limit)))\n        return {items,next_cursor:items.at(-1)?.id||after,done:items.length<limit}\n      }\n    }"
+        }
+      ]
+    },
+    {
+      "module": "memory",
+      "file": "index.mjs",
+      "before_sha256": "79516fde602357ca7e914ee2d546fd62d7ad41af2a608c5bf9f8587285a978db",
+      "after_sha256": "077c2b1b8f1f41d7bb73824096d09c89535cd67ade49c775d7dc81be3dec5cf0",
+      "operations": [
+        {
+          "find": "hub, log: api.log, fetchImpl, setConfig: api.setConfig })",
+          "replace": "hub, log: api.log, fetchImpl, setConfig: api.setConfig, preparationPolicy: () => api.use('thinkstar-memory')?.nativePreparation })"
+        },
+        {
+          "find": "where: current + '（翻记忆）', vectorHits, period:",
+          "replace": "where: current + '（翻记忆）', preparationChat: { ...chat, thinkstarManual: true }, vectorHits, period:"
+        }
+      ]
+    },
+    {
+      "module": "memory",
+      "file": "memory.js",
+      "before_sha256": "c8f4b0e3664bb7ac73c250cc5e31c36d3f8f2c37ad64ca1416c484f52903c62a",
+      "after_sha256": "3fbc289f88f4b16ff459fb7e0d6bee8de739ff81a2230febb0abe6ab83345438",
+      "operations": [
+        {
+          "find": "setConfig = null, storage: suppliedStorage = null }) {",
+          "replace": "setConfig = null, storage: suppliedStorage = null, preparationPolicy = () => null }) {"
+        },
+        {
+          "find": "  let forgetVersion = 0",
+          "replace": "  // Thinkstar filters structured sources before retrieval and before final rendering.\n  function prepared(items, path, chat) {\n    const policy = preparationPolicy()\n    if (typeof policy !== 'function') return items\n    const result = policy({ path, items, chat, manual: chat?.thinkstarManual === true })\n    if (result?.version !== 'thinkstar-group-preparation/1' || !Array.isArray(result.items)) throw new Error('Thinkstar preparation policy unavailable')\n    return result.items\n  }\n  function preparedHits(hits, chat) {\n    const current = new Map(index(chat).docs.map(d => [d.it.id, d.it]))\n    const allowed = new Map(prepared(hits.map(h => current.get(h.it.id)).filter(Boolean), 'memory.fact', chat).map(it => [it.id, it]))\n    return hits.filter(h => allowed.has(h.it.id)).map(h => ({ ...h, it: allowed.get(h.it.id) }))\n  }\n  let forgetVersion = 0"
+        },
+        {
+          "find": "  const index = () => {",
+          "replace": "  const index = (preparationChat = null) => {"
+        },
+        {
+          "find": "    return cache.idx\n  }",
+          "replace": "    {\n      const original = cache.idx.docs.map(d => d.it), visible = prepared(original, 'memory.fact', preparationChat)\n      if (visible.length !== original.length || visible.some((it, i) => it !== original[i])) return buildIndex(visible)\n    }\n    return cache.idx\n  }"
+        },
+        {
+          "find": "vectorHits, period } = {}) {",
+          "replace": "vectorHits, period, preparationChat = null } = {}) {"
+        },
+        {
+          "find": "    const idx = index()\n    // 查询结束",
+          "replace": "    const idx = index(preparationChat)\n    // 查询结束"
+        },
+        {
+          "find": "pick(search(index(), context, {",
+          "replace": "pick(search(idx, context, {"
+        },
+        {
+          "find": "excludeAbout: ownerPrivate ? '' : owner, vectorHits }).filter",
+          "replace": "excludeAbout: ownerPrivate ? '' : owner, preparationChat: chat, vectorHits }).filter"
+        },
+        {
+          "find": "excludeAbout: ownerPrivate ? '' : owner, vectorHits, limit: candidateLimit }).filter",
+          "replace": "excludeAbout: ownerPrivate ? '' : owner, preparationChat: chat, vectorHits, limit: candidateLimit }).filter"
+        },
+        {
+          "find": "    hits = hits.filter((h) => current.has(h.it.id)).slice(0, 4)",
+          "replace": "    hits = preparedHits(hits.filter((h) => current.has(h.it.id)), chat).slice(0, 4)"
+        },
+        {
+          "find": "    hits = hits.filter((h) => current.has(h.it.id)).slice(0, limit)",
+          "replace": "    hits = (opts.preparationChat ? preparedHits(hits.filter((h) => current.has(h.it.id)), opts.preparationChat) : hits.filter((h) => current.has(h.it.id))).slice(0, limit)"
+        },
+        {
+          "find": "    let resident = parts.join('\\n')",
+          "replace": "    let resident = prepared(parts.map((text, i) => ({ id: 'resident:' + i, text, chatId: chat?.kind === 'group' ? chat.chatId : '', policyOpaque: true })), 'memory.resident', chat).map(x => x.text).join('\\n')"
+        },
+        {
+          "find": "    // 群白名单：配了就只取这些群",
+          "replace": "    rows = prepared(rows, 'memory.backdrop', chat)\n    // 群白名单：配了就只取这些群"
+        },
+        {
+          "find": "    const rows = chatTail(chat.chatId).filter((l) => chat.kind !== 'group' || !owner || String(l.uid || '') !== owner)",
+          "replace": "    const rows = prepared(chatTail(chat.chatId).filter((l) => chat.kind !== 'group' || !owner || String(l.uid || '') !== owner), 'memory.tail', chat)"
+        },
+        {
+          "find": "    for (const l of crossRows()) {",
+          "replace": "    for (const l of prepared(crossRows(), 'memory.cross', chat)) {"
+        },
+        {
+          "find": "    dueFollowUp, markFollowUpAsked,",
+          "replace": "    preparationPolicyStatus: () => ({ version: 'thinkstar-group-preparation/1', connected: typeof preparationPolicy() === 'function' }),\n    previewPreparation: (items, chat) => prepared(items, 'memory.fact', chat),\n    policyRecord: id => load().items.find(it => it.id === id) || null,\n    retirementSources: ({ before, after = '', limit = 200 }) => {\n      const state = load(), items = state.items.filter(it => /^group:[^\\s:]+$/.test(it.chatId || '') && rememberedItem(it, state) && String(it.id) > String(after) && (!it.saidAt || it.saidAt < before)).sort((a,b) => String(a.id).localeCompare(String(b.id)))\n      const page = items.slice(0, Math.max(1, Math.min(200, limit)))\n      return { items: page, next_cursor: page.at(-1)?.id || after, done: page.length === items.length }\n    },\n    dueFollowUp, markFollowUpAsked,"
+        },
+        {
+          "find": "  function preparedHits(hits, chat) {",
+          "replace": "  function learningItems(items, path = 'memory.fact') {\n    const allowed = new Set(prepared(items, path, null).filter(it => !it.thinkstar_precision))\n    return items.filter(it => allowed.has(it))\n  }\n  function preparedHits(hits, chat) {"
+        },
+        {
+          "find": "    const interaction = Array.isArray(row.interaction) ? row.interaction : []",
+          "replace": "    if (!prepared([row], 'memory.tail', null).length) return false\n    const interaction = Array.isArray(row.interaction) ? row.interaction : []"
+        },
+        {
+          "find": "    const talk = lines.filter((l)",
+          "replace": "    const talk = learningItems(lines, 'memory.tail').filter((l)"
+        },
+        {
+          "find": "      const talk = rows.filter((l)",
+          "replace": "      const talk = learningItems(rows, 'memory.tail').filter((l)"
+        },
+        {
+          "find": "    const mine = state.items.filter((m)",
+          "replace": "    const mine = learningItems(state.items).filter((m)"
+        },
+        {
+          "find": "    const live = s.items.filter((m) => isCurrent(m) && m.kind !== 'seen' && String(m.text || '').trim())",
+          "replace": "    const live = learningItems(s.items).filter((m) => isCurrent(m) && m.kind !== 'seen' && String(m.text || '').trim())"
+        },
+        {
+          "find": "    const items = snapshot.items.filter((m) => allowed(m)",
+          "replace": "    const items = learningItems(snapshot.items).filter((m) => allowed(m)"
+        },
+        {
+          "find": "compressionClusters(snapshot.items.filter((m) => rememberedItem(m, snapshot))",
+          "replace": "compressionClusters(learningItems(snapshot.items).filter((m) => rememberedItem(m, snapshot))"
+        },
+        {
+          "find": "      const fresh = load().items.filter((m)",
+          "replace": "      const fresh = learningItems(load().items).filter((m)"
+        },
+        {
+          "find": "    const list = snapshot.items.filter((m)",
+          "replace": "    const list = learningItems(snapshot.items).filter((m)"
+        },
+        {
+          "find": "    const facts = factSnapshot.items.filter((m)",
+          "replace": "    const facts = learningItems(factSnapshot.items).filter((m)"
+        },
+        {
+          "find": "    if (!isCurrent(item) || item.kind === 'seen' || item.source === 'event' || item.source === 'diary') return",
+          "replace": "    if (!learningItems([item]).length || !isCurrent(item) || item.kind === 'seen' || item.source === 'event' || item.source === 'diary') return"
+        },
+        {
+          "find": "    const candidates = s.items.filter((m) => m.id !== item.id",
+          "replace": "    const candidates = learningItems(s.items).filter((m) => m.id !== item.id"
+        },
+        {
+          "find": "return snapshot.items.filter((m) => rememberedItem(m, snapshot))",
+          "replace": "return learningItems(snapshot.items).filter((m) => rememberedItem(m, snapshot))"
+        },
+        {
+          "find": "    const current = new Set(index().docs.map((d) => d.it.id))\n    hits = (opts.preparationChat",
+          "replace": "    const current = new Set(index(opts.preparationChat).docs.map((d) => d.it.id))\n    hits = (opts.preparationChat"
+        }
+      ]
+    }
+  ]
+}

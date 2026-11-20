@@ -20,7 +20,8 @@ export class V5Semantic {
   configure({embed,model}){this.embed=embed;this.model=model;}
   status(){return {available:typeof this.embed==='function',model:this.model,indexed_chunks:Number(this.r.store.sql('SELECT count(*) n FROM semantic_chunks WHERE model=?').get(this.model).n),indexed_documents:Number(this.r.store.sql('SELECT count(*) n FROM semantic_documents WHERE model=?').get(this.model).n),busy:this.busy,error:this.error,cpu_only:true};}
   async vector(text){const value=await this.embed(text);return norm(value);}
-  signature(m){return digest([this.model,'condition-anchor-v1',m.id,this.r.body(m),m.attributes.trigger_condition??null]);}
+  text(m){const lifecycle=this.r.groupLifecycle();return lifecycle.retiredRefs(m).length?lifecycle.project(m,{onDemand:true})?.text??'':this.r.body(m);}
+  signature(m){return digest([this.model,'condition-anchor-v1',m.id,this.text(m),m.attributes.trigger_condition??null]);}
   async sync({scope='all',scope_ids=null,limit=24,force=false,filter=()=>true}={}){
     if(this.stopped||this.busy||!this.embed)return {processed:0,reason:'not_ready_or_busy'};
     if(!force&&!this.r.maintenanceWindow().allowed)return {processed:0,reason:'outside_night_window'};
@@ -33,7 +34,7 @@ export class V5Semantic {
         if(!filter(m)){this.rejected.set(m.id,this.r.clock());while(this.rejected.size>4096)this.rejected.delete(this.rejected.keys().next().value);continue;}
         const signature=this.signature(m),indexed=this.r.store.sql('SELECT signature FROM semantic_documents WHERE memory_id=? AND model=?').get(m.id,this.model);
         if(indexed?.signature===signature){this.r.store.sql('UPDATE semantic_documents SET revision=? WHERE memory_id=?').run(m.revision,m.id);continue;}
-        const parts=memoryChunks(this.r.body(m));if(m.kind==='pattern'&&m.attributes.trigger_condition&&m.attributes.trigger_condition!=='仅在原话所述条件成立时')parts.push({offset:-1,text:m.attributes.trigger_condition});const vectors=[];
+        const parts=memoryChunks(this.text(m));if(m.kind==='pattern'&&m.attributes.trigger_condition&&m.attributes.trigger_condition!=='仅在原话所述条件成立时')parts.push({offset:-1,text:m.attributes.trigger_condition});const vectors=[];
         for(const part of parts){if(this.stopped)break;vectors.push({...part,vector:await this.vector(part.text)});}
         const current=this.r.store.getMemory(m.id);if(this.stopped||!current||current.layer==='forgotten'||current.validity!=='current'||!filter(current)||this.signature(current)!==signature)continue;
         this.r.store.tx(()=>{this.r.store.sql('DELETE FROM semantic_chunks WHERE memory_id=?').run(m.id);
