@@ -1,3 +1,5 @@
+import {prepareRequest,installUsage,migrationGate,stableAgentIdle} from './host-runtime.mjs';
+import {historyPage,boundedRaw} from './history.mjs';
 import {chooseWindow,windowOwns,windowPrompt} from './world-window.mjs';
 import {readFileSync,writeFileSync,renameSync} from 'node:fs';
 import {createHash} from 'node:crypto';
@@ -5,11 +7,17 @@ import {FishBridge} from './bridge.mjs';
 import {LifeEngine,worldNames} from './life.mjs';
 import {defaults} from './state.mjs';
 import {sendShare} from './delivery.mjs';
+// Existing host settings stay byte-for-byte unchanged on load; new knobs inherit module defaults until explicitly saved.
+const internalKeys=new Set(['normalMinGapMs','urgentMinGapMs','urgentMaxRoundsPer10Min','planRecheckMinMs','unchangedPlanRoundLimit','roundPromptEstimatedTokenLimit','visibleContextEstimatedTokenLimit','requestAdmissionEstimatedTokenLimit','costGuardEnabled','costSoftLimitCny','costStopLimitCny']);
+const hostDefaults=Object.fromEntries(Object.entries(defaults).filter(([name])=>!internalKeys.has(name)));
 const key=v=>String(v||'').replace(/^session-/,'');
 export default {
-  id:'fish-world',name:'鱼的世界',version:"1.2.1",api:1,panel:'panel.js',
-  description:'同人格的事件处理、自主生活、计划续行和正式 QQ 分享。',defaults,
+  id:'fish-world',name:'鱼的世界',version:"1.3.0",api:1,panel:'panel.js',
+  description:'同人格的事件处理、自主生活、计划续行和正式 QQ 分享。',defaults:hostDefaults,
   settings:[
+    ...[['normalMinGapMs','普通回合最小间隔（毫秒）',180000],['urgentMinGapMs','真实紧急事件最小间隔（毫秒）',30000],['urgentMaxRoundsPer10Min','滚动十分钟紧急最多回合',4],['planRecheckMinMs','同计划同版本最小间隔（毫秒）',300000],['unchangedPlanRoundLimit','无进展后等待证据的检查次数',1],['roundPromptEstimatedTokenLimit','本轮新增提示估算门槛',12000],['visibleContextEstimatedTokenLimit','可见历史换窗估算门槛',48000],['requestAdmissionEstimatedTokenLimit','完整请求估算目标',64000],['costSoftLimitCny','每日估算费用软阈值（元）',2],['costStopLimitCny','每日估算费用停止新回合阈值（元）',3]].map(([key,label,value])=>({key,label,type:'number',min:0,max:1000000,hint:'未保存时沿用模块初值 '+value+'；只影响鱼世界自动生活，保留现有每日额度。Token为估算，费用无逐步硬预算保证。'})),
+    {key:'costGuardEnabled',label:'启用估算费用准入',type:'switch',hint:'默认关闭，仅观测。启用后未知用量先暂停启动；软阈值暂停低优先级闲时，停止阈值不再开新回合。正在执行的请求仍可能产生费用。'},
+
     {key:'backgroundContextEnabled',label:'世界生活有界上下文',type:'switch',hint:'只在安全回合边界换窗；旧日志、身份、额度、计划与投递账本保留。关闭停止后续换窗，继续当前窗口。'},
     {key:'backgroundContextRounds',label:'每窗口已完成生活回合',type:'number',min:8,max:64,step:1,hint:'推荐 16；计完整生活回合，不计工具或模型请求。未确认操作、在途调用或投递期间延后。'},
     {key:'idleWorkHours',label:'闲时生活工作时间（北京时间）',type:'text',hint:'留空沿用原作息；支持多个跨午夜时段，如 18:00-09:00,12:00-14:00。仅控制新闲时回合，不延后主人安排、到期计划、工作或恢复。'},
@@ -31,9 +39,10 @@ export default {
     const scope=()=>createHash('sha256').update(JSON.stringify([bridge.data.fishId,identity()])).digest('hex').slice(0,24);
     const systemChat=chat=>chat?.kind==='system'&&String(chat.chatId||'').startsWith('system:ext-fish-world:')&&windowOwns(engine?.l||{},scope(),String(chat.chatId).slice('system:ext-fish-world:'.length));
     const host={
-      async run(prompt){if(!allowed())throw Error('已停用');const base=scope(),windowKey=chooseWindow(engine,base,{enabled:engine.cfg.backgroundContextEnabled===true,rounds:engine.cfg.backgroundContextRounds});const a=findAgent(engine.l.sessionId),visible=(a?.session?.deriveMessages?.()||[]).flatMap(m=>m.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('\n');const rendered=windowPrompt(engine,prompt,{identity:identity(),visible:engine.l.contextWindow?.packet?.window===windowKey?visible:'',file:api.dataDir('context-handoffs',windowKey.replaceAll(':','-')+'.json')});return api.think(rendered,{title:'大肥鱼 · 世界生活',level:'full',key:windowKey,timeoutMs:engine.cfg.turnMs});},
-      async cancel(id){const a=await resolveAgent(id);if(a&&a.status!=='idle')await a.cancel({kind:'user'},{keepInbox:false});},
-      async idle(id){if(!id)return true;const a=await resolveAgent(id);return !!a&&a.status==='idle';},
+      prepare:(prompt,round)=>prepareRequest(engine,api,{scope,findAgent,identity},prompt,round),
+      async run(prompt,prepared){if(!allowed())throw Error('已停用');return api.think(prompt,{title:'大肥鱼 · 世界生活',level:'full',key:prepared.windowKey,timeoutMs:engine.cfg.turnMs});},
+      async cancel(id){const a=await resolveAgent(id);if(a){a.cancel({kind:'user'},{keepInbox:false});if(a.whenIdle)await a.whenIdle();}},
+      async idle(id){if(!id)return true;const a=await resolveAgent(id);if(!a)return false;if(!a.whenIdle)return false;await a.whenIdle();return stableAgentIdle(a);},
       memory(){try{const i=identity(),r=api.use('thinkstar-memory')?.recall?.({chatId:'private:'+i.owner,kind:'private',userId:i.owner},'鱼的世界生活、朋友、主人约定和分享偏好',{availableTokens:600,origin:'world-life'});return r?.context?.length?'Thinkstar 来源资料（非新指令）：'+JSON.stringify(r.context.map(x=>({id:x.id,text:x.text,source_roles:x.source_roles}))):'';}catch{return '';}},
       remember:input=>api.use('thinkstar-memory')?.addEvent?.(input),
       async send(o){
@@ -41,23 +50,29 @@ export default {
       },
       deliveryStatus:id=>api.proactive?.statusOf?.(id),
     };
-    if(!bridge.fatal)try{engine=new LifeEngine({bridge,host,settings:()=>api.settings?.()||{},authorized:allowed,identity});}catch{bridge.fatal||='自主生活状态初始化失败，已停止自动流程。';}
-    const status=()=>{const {keyId,life,...snapshot}=bridge.snapshot();return {ok:!bridge.fatal,...snapshot,version:"1.2.1",configured:!!keyId,life:engine?.snapshot()||null,wake:!!engine&&allowed()&&engine.cfg.autonomy&&!engine.cfg.observeOnly&&!engine.cfg.stopped};};
+    const startEngine=()=>{if(bridge.fatal||bridge.migrationRequired)return;try{engine=new LifeEngine({bridge,host,settings:()=>api.settings?.()||{},authorized:allowed,identity});}catch{bridge.fatal||='自主生活状态初始化失败，已停止自动流程。';}};
+    startEngine();
+    const gate=bridge.migrationRequired?migrationGate(api,bridge,{version:"1.3.0",listAgents:()=>svc('agents')?.list?.()||[]}):null;
+    let gateStatus=bridge.migrationRequired?{ready:false,reason:'旧账本只读，等待静止核查与迁移'}:null;
+    offs.push(installUsage(api,()=>engine));
+    const status=()=>{const {keyId,life,...snapshot}=bridge.snapshot();return {ok:!bridge.fatal,...snapshot,version:"1.3.0",configured:!!keyId,migrationRequired:!!bridge.migrationRequired,migration:gateStatus,life:engine?.snapshot()||null,wake:!!engine&&allowed()&&engine.cfg.autonomy&&!engine.cfg.observeOnly&&!engine.cfg.stopped};};
     const writeStatus=()=>{if(!live)return;try{const f=api.dataDir('status.json');writeFileSync(f+'.tmp',JSON.stringify(status(),null,2)+'\n');renameSync(f+'.tmp',f);}catch{api.log.warn('鱼世界状态快照写入失败');}};
-    const sync=()=>allowed()&&!engine?.cfg.stopped?bridge.sync():Promise.resolve();
+    const sync=()=>allowed()&&!bridge.migrationRequired&&!engine?.cfg.stopped?bridge.sync():Promise.resolve();
     const ensure=(chat,sessionId)=>{if(!ownerChat(chat)||!api.core.hub.turnSendersAllOwner(sessionId))throw Error('仅当前主人私聊可用');};
     const describe=()=>{const s=status(),l=s.life;return [bridge.context(),s.fatal,l?'自动生活：'+JSON.stringify({busy:l.round&&{kind:l.round.kind,status:l.round.status},blocked:l.blocked,controls:l.settings,usage:l.usage,pending:l.queue.filter(q=>['pending','running','uncertain','blocked'].includes(q.status)),plans:l.plans.slice(-6),nextIdle:l.nextIdle,sharing:l.outbox.slice(-5).map(o=>({text:o.text,state:o.state,receipt:o.receipt}))}):'自动生活未加载'].filter(Boolean).join('\n');};
     const tools=svc('tools');
-    if(engine&&typeof tools?.guard==='function'&&api.dsh?.on){
+    if(typeof tools?.guard==='function')offs.push(tools.guard(exec=>bridge.migrationRequired&&(/^mcp__fish-world__world_(go|do|say|update)$/.test(exec.name)||exec.name==='mcp__fish-world__world_friends'&&exec.arguments?.action!=='list')?'鱼世界账本迁移只读门禁，等待原写入者停止及迁移回执':undefined));
+    const attachEngine=()=>{if(engine&&typeof tools?.guard==='function'&&api.dsh?.on){
       offs.push(tools.guard(exec=>{const sid=key(exec.agent?.session?.id),chat=api.core.hub.chatOfSession?.(exec.agent?.session?.id);const bg=background.has(sid)||String(chat||'').startsWith('system:ext-fish-world:');if(bg&&!background.has(sid))return '后台尚未完成工具能力校验';
         if(!bg&&String(chat||'').startsWith('system:')&&(/^mcp__fish-world__world_(go|do|say|update)$/.test(exec.name)||exec.name==='mcp__fish-world__world_friends'&&exec.arguments?.action!=='list'))return '鱼世界自主行动由统一生活会话执行，请通过鱼世界计划协调';
         return engine.guard(exec,bg,chat==='private:'+identity().owner);}));
       offs.push(api.dsh.on('tools/result',(exec,result)=>{try{engine.result(exec,result);}catch{void host.cancel(engine.l.round?.sessionId).catch(()=>{});}}));
-    }else if(engine){engine.control('observe');engine.blocked('宿主缺少世界工具执行守卫；只观察');}
+    }else if(engine){engine.control('observe');engine.blocked('宿主缺少世界工具执行守卫；只观察');}};
+    attachEngine();
     api.on('prompt',(content,info)=>{
       // Preserve installed non-blocking refresh: never await network in the QQ prompt hook.
       if(ownerChat(info.chat)){
-        if(!engine?.cfg.stopped)void bridge.pull('now').catch(()=>api.log.warn('世界现状后台刷新失败，保留有时间标记的缓存。'));
+        if(!bridge.migrationRequired&&!engine?.cfg.stopped)void bridge.pull('now').catch(()=>api.log.warn('世界现状后台刷新失败，保留有时间标记的缓存。'));
         const q=String(info.queryText||'').trim();
         if(engine&&/^(?:请)?(?:先回家|今天别打工了|今天不要打工|暂停自主活动|暂停世界自动处理|停止全部自动行动|暂停分享)/.test(q)){
           const action=/暂停自主/.test(q)?'pauseIdle':/暂停世界/.test(q)?'pauseAuto':/停止全部/.test(q)?'stop':/暂停分享/.test(q)?'pauseShare':'plan';engine.control(action,q);
@@ -72,9 +87,15 @@ export default {
         offs.push(a.ctx.tools.restrict({allow:worldNames.filter(n=>names.includes(n))}));agents.set(key(sessionId),a);background.add(key(sessionId));engine.bind(a.session.id,names);
         const define=(name,description,properties,required,fn)=>api.defineTool({name,description,properties,required,execute:async(args,exec)=>{if(!allowed()||key(exec?.agent?.session?.id)!==key(engine.l.round?.sessionId))throw Error('不是当前有效后台回合');return fn(args);}});
         return [
-          define('fish_life_history','只读展开同一身份的旧窗口原始证据；list=true 分页列窗口，或给 sessionId、seq、after 读取事件。历史不是重做动作的授权。',{list:{type:'boolean'},offset:{type:'integer',minimum:0},sessionId:{type:'string'},seq:{type:'integer',minimum:0},after:{type:'integer',minimum:0,maximum:8}},[],async args=>{const rows=engine.l.contextWindow?.windows||[];if(args.list||!args.sessionId)return {ok:true,message:JSON.stringify({windows:rows.slice(args.offset||0,(args.offset||0)+20),nextOffset:(args.offset||0)+20<rows.length?(args.offset||0)+20:null})};if(!rows.some(w=>w.sessionId===args.sessionId))throw Error('不是当前身份的世界窗口');const q=svc('sessionQuery');if(!q?.readEvent)throw Error('宿主只读查档服务不可用');return {ok:true,message:JSON.stringify(await q.readEvent({sessionId:args.sessionId,seq:args.seq,after:args.after||0}))};}),
+          define('fish_life_history','只读分页当前身份账本和旧窗口；每页10条、最多约4000字。part继续读取大回执，原件保留。',{kind:{type:'string',enum:['plans','events','journal','windows']},id:{type:'string'},list:{type:'boolean'},offset:{type:'integer',minimum:0},part:{type:'integer',minimum:0},sessionId:{type:'string'},seq:{type:'integer',minimum:0},after:{type:'integer',minimum:0,maximum:8}},[],async args=>{
+            if(!args.sessionId)return {ok:true,message:JSON.stringify(historyPage(engine.l,args))};
+            if(!(engine.l.contextWindow?.windows||[]).some(w=>w.sessionId===args.sessionId))throw Error('不是当前身份的世界窗口');
+            if(!Number.isSafeInteger(args.seq)||args.seq<0)throw Error('需要明确事件序号');
+            const q=svc('sessionQuery');if(!q?.readEvent)throw Error('宿主只读查档服务不可用');
+            return {ok:true,message:JSON.stringify(boundedRaw(await q.readEvent({sessionId:args.sessionId,seq:args.seq,after:Math.min(8,args.after||0)}),args))};
+          }),
           define('fish_life_intent','世界变更前登记完整工具参数、类别、消费和本轮真实回执原文依据。',{tool:{type:'string'},arguments:{type:'string'},category:{type:'string',enum:['daily','work','social','stocks','gift']},cost:{type:'number'},evidence:{type:'string'}},['tool','arguments','category','cost','evidence'],a=>engine.intent(a)),
-          define('fish_life_finish','保存真实结果、计划和分享草稿；facts 是本轮工具回执编号，不能声称 QQ 已发送。',{summary:{type:'string'},events:{type:'array',items:{type:'object',properties:{id:{type:'string'},status:{type:'string',enum:['completed','expired','blocked']}},required:['id','status']}},plans:{type:'array',items:{type:'object',properties:{id:{type:'string'},goal:{type:'string'},reason:{type:'string'},progress:{type:'string'},nextStep:{type:'string'},trigger:{type:'string'},nextAt:{type:'number'},status:{type:'string',enum:['pending','active','completed','abandoned','blocked']},changeReason:{type:'string'}},required:['goal','reason','progress','nextStep','trigger','status']}},nextAt:{type:'number'},importance:{type:'string',enum:['routine','important','urgent']},facts:{type:'array',items:{type:'string'}},share:{type:'string'}},['summary','events','plans','importance','facts','share'],a=>engine.finish(a)),
+          define('fish_life_finish','保存真实结果、计划和分享草稿；facts 是本轮工具回执编号，不能声称 QQ 已发送。',{summary:{type:'string'},events:{type:'array',items:{type:'object',properties:{id:{type:'string'},status:{type:'string',enum:['completed','expired','blocked']}},required:['id','status']}},planChanges:{type:'array',items:{type:'object',properties:{op:{type:'string',enum:['create','update','complete','expire','abandon','block','supersede','merge']},id:{type:'string'},expectedRevision:{type:'integer'},targetId:{type:'string'},targetExpectedRevision:{type:'integer'},reason:{type:'string'},reviewed:{type:'boolean'},evidenceIds:{type:'array',items:{type:'string'}},plan:{type:'object'},patch:{type:'object'}},required:['op']}},plans:{type:'array',items:{type:'object',properties:{id:{type:'string'},goal:{type:'string'},reason:{type:'string'},progress:{type:'string'},nextStep:{type:'string'},trigger:{type:'string'},nextAt:{type:'number'},status:{type:'string',enum:['pending','active','completed','abandoned','blocked']},changeReason:{type:'string'}},required:['goal','reason','progress','nextStep','trigger','status']}},nextAt:{type:'number'},importance:{type:'string',enum:['routine','important','urgent']},facts:{type:'array',items:{type:'string'}},share:{type:'string'}},['summary','events','importance','facts','share'],a=>engine.finish(a)),
         ];
       }
       if(level!=='full'||!ownerChat(chat))return [];
@@ -94,7 +115,7 @@ export default {
     }});
     api.route('/status',()=>status(),{access:'panel'});
     api.route('/control',async req=>{if(req.method!=='POST')throw Error('请使用 POST');if(!engine||!allowed())throw Error('模块未启用');const body=await api.core.http.body(req);engine.control(body.action,body.instruction);return status();},{access:'panel'});
-    api.every(2000,()=>{void sync().catch(()=>{});if(engine)void engine.tick().catch(()=>api.log.warn('鱼世界调度失败，保留运行状态'));},'世界采集和生活调度');
+    api.every(2000,()=>{if(bridge.migrationRequired){void gate?.probe().then(result=>{gateStatus=result;if(result.ready){startEngine();attachEngine();writeStatus();}}).catch(error=>{gateStatus={ready:false,reason:String(error.message)};});return;}void sync().catch(()=>{});if(engine)void engine.tick().catch(()=>api.log.warn('鱼世界调度失败，保留运行状态'));},'世界采集和生活调度');
     api.every(10000,writeStatus,'世界状态记录');api.later(1000,()=>{void sync().catch(()=>{});writeStatus();});
     api.onDispose(async()=>{live=false;await engine?.dispose();for(const off of offs.reverse())try{off?.();}catch{}bridge.dispose();});
     writeStatus();api.log.info('鱼的世界已加载：持久队列、同人格生活会话、正式 QQ 分享；聊天刷新保持非阻塞。');

@@ -6,7 +6,7 @@ Canonical sources are extensions/aurabot/fish-world and extensions/aurabot/histo
 
 Requires Node 22.13+ and compatible Aurabot 1.3.0-beta.1 module APIs. The extensions use Node built-ins; DSH supplies sessionQuery, Session and tool services. No credentials, models or databases are bundled.
 
-    node scripts/set-context-module-version.js fish-world 1.1.0
+    node scripts/set-context-module-version.js fish-world 1.3.0
     node scripts/set-context-module-version.js history-vault 0.2.2
     node scripts/build-context-modules.js
     node scripts/run-tests.js context-governance.test.js
@@ -17,9 +17,9 @@ Repeat the updater for history-vault. Without --extension the entry retains its 
 
 ## World life settings and continuity
 
-backgroundContextEnabled controls only background world life. backgroundContextRounds defaults to 16 completed successful life rounds, range 8–64; calls and retries do not increment it. Recovery, in-flight tools, uncertain operations and unsettled delivery pin the current window. Disabling stops further rotation while continuing the current window. Identity, quotas, request IDs, cooldowns and failures remain in the same runtime ledger.
+backgroundContextEnabled controls only background world life. backgroundContextRounds defaults to 16 completed successful life rounds, range 8–64; calls and retries do not increment it. In-flight tools and unsettled delivery pin the current window. Confirmed stopped recovery can open a bounded read-only window while retaining unknown evidence. Disabling stops further rotation while continuing the current window. Identity, quotas, request IDs, cooldowns and failures remain in the same runtime ledger.
 
-The additive contextWindow state and context-handoffs files preserve complete unfinished plans/events, exact nextAt/trigger, owner instructions, identity, observed world state and timestamps, quotas, uncertain receipts and sharing outbox. Closed plan history is bounded independently; unfinished plans are not sliced away. A new window receives a full handoff; later rounds send changed fields. Stable rules and identical complete Thinkstar material are reused only while their full content and the required state chain remain visible. A missing/partially compressed chain causes full restoration. fish_life_history lists all owned windows and reads exact source events through the supported sessionQuery API. It is read-only and cannot authorize repeated actions.
+Fish-world runtime schema is now 3, life schema 2. The ledger retains all plans and exact source evidence; current-task context carries at most 12 related plans, eight events and a few current alerts. Keyed changes replace whole-plan-array retransmission. Source history is scoped to owned windows with ten-record / about 4000-character pages and lossless part references. Startup estimates include visible history, tool schemas and unknown wrapper reserve; final llm/stream checks the official complete request. See extensions/aurabot/fish-world/README.md for thresholds, cost semantics and controls.
 
 ## Owner-private settings and existing compression
 
@@ -35,7 +35,7 @@ Host projection helpers are tested for protocol correctness, including tool-resu
 
 Before application, retain current configuration, world ledger, source session and a consistent compression-store backup. Use the engine's online backup API and verify the resulting SQLite backup read-only. Keep these private files local. Disable the corresponding switches to stop new decisions. Existing surface decisions and compression blocks remain traceable; original evidence can be expanded through context_evidence_read or the owning engine's decompress/search tools. Do not delete memory or reset world accounting to roll back.
 
-For code rollback, download the exact ZIP and restore manifest linked by the installation receipt, verify SHA256 and every context-build.json file entry, then restore into a NEW empty directory. Use the updater's checked staging/rollback procedure while the affected module is stopped. Restoring old world routing requires reviewing the latest handoff and pending operations before resuming. No database schema change is introduced; contextWindow is additive and older code ignores it.
+For code rollback, download the exact ZIP and restore manifest linked by the installation receipt, verify SHA256 and every context-build.json file entry, then restore into a NEW empty directory. Use the updater's checked staging/rollback procedure while the affected module is stopped. Restoring old world routing requires reviewing the latest handoff and pending operations before resuming. Fish-world schema 3/life 2 is not a transparent rollback to older code. Run the explicit migration dry-run before install, then apply only with the replacement module's fresh quiescence witness. Preserve its original ledger bytes, hash, mapping and apply receipt in private module data. Rollback refuses any changed post-migration ledger: after new events use a forward fix or reviewed compatibility export while keeping autonomy paused. The updater alone does not migrate private data.
 
 Tests use scripts/run-tests.js and scripts/lib/test-workspace.js. Set DSH_ASAR and BILI_KERNEL_FILE for mandatory local integration proofs against the installed SDK and isolated current compression kernel. Portable test runs explicitly skip unavailable installed-runtime checks. All synthetic databases/caches/extractions are automatically removed; reports, logs, results and cleanup receipts remain. Real memory, models, attachments, chat logs and necessary backups are never included in cleanup or GitHub assets.
 

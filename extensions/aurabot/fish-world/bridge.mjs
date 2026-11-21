@@ -1,3 +1,4 @@
+import {readAppliedMigrationReceipt} from './migration.mjs';
 import {readFileSync,writeFileSync,renameSync,mkdirSync,existsSync} from 'node:fs';
 import {dirname} from 'node:path';
 import {createHash} from 'node:crypto';
@@ -5,7 +6,7 @@ import {clean,newLife,enqueue} from './state.mjs';
 
 export const API='https://api.yuyuworld.app';
 const TTL={state:60000,now:60000,notify:30000};
-const empty=()=>({version:2,keyId:'',fishId:'',cursor:'',recent:[],skipped:0,state:null,now:'',at:{},errors:{},life:newLife()});
+const empty=()=>({version:3,keyId:'',fishId:'',cursor:'',recent:[],skipped:0,state:null,now:'',at:{},errors:{},life:newLife()});
 
 export class FishBridge {
   constructor({file,credential,fetcher=fetch,clock=Date.now,changed=()=>{}}) {
@@ -15,9 +16,11 @@ export class FishBridge {
     this.fatal='';this.identityReady=false;
     if(existsSync(file))try{
       const d=JSON.parse(readFileSync(file,'utf8'));
-      if(![1,2].includes(d.version)||!Array.isArray(d.recent)||!d.at||!d.errors)throw Error('schema');
-      if(d.version===2&&(!d.life||!Array.isArray(d.life.queue)||!Array.isArray(d.life.outbox)||!Array.isArray(d.life.plans)))throw Error('life schema');
-      this.data={...empty(),...d,version:2,fishId:d.fishId||d.state?.fish||'',life:d.life||newLife(clock())};
+      if(![1,2,3].includes(d.version)||!Array.isArray(d.recent)||!d.at||!d.errors)throw Error('schema');
+      if(d.version>=2&&(!d.life||!Array.isArray(d.life.queue)||!Array.isArray(d.life.outbox)||!Array.isArray(d.life.plans)))throw Error('life schema');
+      this.migrationRequired=d.version!==3||d.life?.version!==2;
+      if(!this.migrationRequired&&d.migration)try{readAppliedMigrationReceipt({runtimePath:file});}catch{this.migrationRequired=true;}
+      this.data={...empty(),...d,version:d.version,fishId:d.fishId||d.state?.fish||'',life:d.life||newLife(clock())};
     }catch{this.fatal='状态文件损坏，自动流程已停止；请保留原文件修复。';}
   }
   key() {
@@ -29,6 +32,7 @@ export class FishBridge {
   }
   save() {
     if(!this.active)return;
+    if(this.migrationRequired)throw Error('旧账本需要显式迁移；当前只读门禁禁止写入');
     if(this.fatal)throw Error(this.fatal);
     try{mkdirSync(dirname(this.file),{recursive:true});
       writeFileSync(this.file+'.tmp',JSON.stringify(this.data,null,2)+'\n');
@@ -36,10 +40,10 @@ export class FishBridge {
     }catch{this.fatal='状态无法持久保存，自动流程已停止。';throw Error(this.fatal);}
     this.changed();
   }
-  change(fn){if(this.fatal)throw Error(this.fatal);const prior=structuredClone(this.data);try{const value=fn(this.data);this.save();return value;}catch(e){this.data=prior;throw e;}}
+  change(fn){if(this.fatal)throw Error(this.fatal);const prior=structuredClone(this.data);try{const value=fn(this.data);if(JSON.stringify(prior)!==JSON.stringify(this.data))this.save();return value;}catch(e){this.data=prior;throw e;}}
   async pull(kind) {
     if(!Object.hasOwn(TTL,kind))throw new Error('不支持的读取接口');
-    if(!this.active||this.fatal)return;
+    if(!this.active||this.fatal||this.migrationRequired)return;
     if(this.flights.has(kind))return this.flights.get(kind);
     let key;
     try{key=this.key();}catch(error){this.data.errors.config=clean(error.message);return;}
