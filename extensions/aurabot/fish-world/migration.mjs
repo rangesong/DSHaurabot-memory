@@ -155,7 +155,7 @@ export function validateMigrationWitness(witness,{runtimePath,runtimeSha256,now=
   requireThat(Number.isFinite(witness.capturedAt)&&Number.isFinite(witness.expiresAt)&&witness.capturedAt<=now&&now-witness.capturedAt<=30000&&witness.expiresAt>now&&witness.expiresAt-witness.capturedAt<=30000,'迁移证明已过期或时间无效');
   for(const key of ['oldWriterStopped','agentsIdle','toolsIdle','outboundIdle'])requireThat(witness[key]===true,'无法证明安全独占：'+key);
   const gate=witness.readOnlyGate,proof=witness.writerProof;
-  requireThat(gate?.active===true&&gate.version===TARGET_MODULE_VERSION&&gate.generation!==undefined&&gate.generation!==null&&gate.generation!=='','新版本迁移只读门禁尚未生效');
+  requireThat(gate?.active===true&&(gate.version===TARGET_MODULE_VERSION||/^1\.3\.\d+$/.test(gate.version||''))&&gate.generation!==undefined&&gate.generation!==null&&gate.generation!=='','新版本迁移只读门禁尚未生效');
   requireThat(proof?.kind==='module-lifecycle-quiescence'&&proof.oldModuleDetached===true&&proof.runtimeSha256===runtimeSha256,'缺少旧写入者生命周期证明');
   requireThat(Number.isFinite(proof.stableSince)&&Number.isFinite(proof.stableThrough)&&proof.stableThrough-proof.stableSince>=15000&&proof.stableThrough<=witness.capturedAt&&witness.capturedAt-proof.stableThrough<=1000,'旧账本稳定观察不足十五秒');
   return true;

@@ -50,15 +50,16 @@ export async function prepareRequest(engine,api,{scope,findAgent,identity},promp
  const old=findAgent(engine.l.sessionId),messages=old?.session?.deriveMessages?.()||[];
  const visible=messages.flatMap(m=>m.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('\n'),visibleTokens=estimateTokens(messages);
  let measured;try{measured=api.dsh.get('tokenMeter')?.measure?.(old?.session);}catch{}
+ const schemas=old?api.dsh.get('tools')?.schemas?.(old)||[]:[],toolsTokens=estimateTokens(schemas),wrapperReserve=16000;
+ const projectedRequest=estimateTokens(prompt)+visibleTokens+toolsTokens+wrapperReserve;
  const recoveryStopped=round.readOnly&&await engine.host.idle(engine.l.sessionId);
  const {chooseWindow,windowPrompt}=await import('./world-window.mjs');
  const windowKey=chooseWindow(engine,scope(),{enabled:engine.cfg.backgroundContextEnabled===true,rounds:engine.cfg.backgroundContextRounds,
-   force:visibleTokens>=engine.cfg.visibleContextEstimatedTokenLimit||!!round.readOnly,recoveryStopped});
+   force:visibleTokens>=engine.cfg.visibleContextEstimatedTokenLimit||projectedRequest>engine.cfg.requestAdmissionEstimatedTokenLimit||!!round.readOnly,recoveryStopped});
  const current=engine.l.contextWindow?.windows.findLast(w=>w.key===windowKey);
  const same=!!current?.sessionId&&key(current.sessionId)===key(old?.session?.id);
  const rendered=windowPrompt(engine,prompt,{identity:identity(),visible:same?visible:'',round,file:api.dataDir('context-handoffs',windowKey.replaceAll(':','-')+'.json')});
- const schemas=old?api.dsh.get('tools')?.schemas?.(old)||[]:[];
- const roundTokens=estimateTokens(rendered),history=same?visibleTokens:0,toolsTokens=estimateTokens(schemas),wrapperReserve=16000;
+ const roundTokens=estimateTokens(rendered),history=same?visibleTokens:0;
  return {prompt:rendered,windowKey,estimate:{roundPromptTokens:roundTokens,visibleContextTokens:history,toolsTokens,wrapperReserve,
    requestTokens:roundTokens+history+toolsTokens+wrapperReserve,scope:'module-visible-all-blocks-tool-schema-plus-unknown-persona-wrapper-reserve',
    hostMeterAvailable:!!measured,hostMeter:measured?{estimated:measured.estimated,total:measured.total}:null,

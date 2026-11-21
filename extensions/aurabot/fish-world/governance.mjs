@@ -52,10 +52,11 @@ export function admission(l,task,cfg,{now,estimate,costSummary}={}){
     const recent=(schedule.starts||[]).filter(s=>s.urgent&&s.at>now-600000);
     if(recent.length>=cfg.urgentMaxRoundsPer10Min)next=Math.max(next,recent[0].at+600000);
   }
+  if(task.bucket==='social'&&now<(l.cooldowns[task.sender]||0))return blocked('同一发送者社交冷却中',l.cooldowns[task.sender]);
   if(task.planId){
     const p=l.plans.find(p=>p.id===task.planId);
     if(!p||!planOpen(p.status)||!['pending','active'].includes(p.status))return blocked('计划不再可执行');
-    if(p.lastCheckedAt&&p.lastCheckedRevision===p.revision)next=Math.max(next,p.lastCheckedAt+cfg.planRecheckMinMs);
+    if(p.lastCheckedAt)next=Math.max(next,p.lastCheckedAt+cfg.planRecheckMinMs);
   }
   if(now<next)return blocked(urgent?'紧急事件正在频率冷却':'普通回合或同一计划正在冷却',next);
   if(estimate){

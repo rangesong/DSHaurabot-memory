@@ -1,10 +1,11 @@
+import {findEquivalentPlan,equivalentPlans,refinementPatch,semanticPlan,constraintsOf} from './plan-semantics.mjs';
 import {createHash} from 'node:crypto';
 import {dayKey,timestamp,planOpen,planTerminal} from './state.mjs';
 
 const hash=x=>createHash('sha256').update(JSON.stringify(x)).digest('hex');
 const norm=x=>String(x??'').normalize('NFKC').replace(/\s+/g,' ').trim();
 const unique=x=>[...new Set(x||[])];
-const fields=['goal','reason','nextStep','topic','subject','stage','businessAt','windowStart','windowEnd','nextAt','expiresAt','trigger','waitCondition','status'];
+const fields=['goal','reason','nextStep','topic','subject','stage','businessAt','windowStart','windowEnd','nextAt','expiresAt','trigger','waitCondition','status','constraints','semanticAliases','semanticIdentity','sourceEventIds','refinements'];
 const terminalOps={complete:'completed',expire:'expired',abandon:'abandoned',block:'blocked',supersede:'superseded',merge:'merged'};
 export const planIdentity=(plan,context={})=>{
   const at=timestamp(plan.businessAt),anchor=at||timestamp(plan.nextAt)||context.now||Date.now();
@@ -58,13 +59,28 @@ export function preparePlanChanges(l,input,{round={},now=Date.now(),fishId=''}={
       const sourceEventIds=unique(p.sourceEventIds||context.sourceEventIds);
       if(sourceEventIds.some(id=>!draft.queue.some(q=>q.id===id)))throw Error('计划来源事件不存在');
       const identity=planIdentity(p,context),logicalKey=logicalPlanKey(p,context);
-      if(p.logicalKey&&p.logicalKey!==logicalKey)throw Error('模型给出的逻辑身份未通过程序核对');
-      const same=draft.plans.find(x=>x.logicalKey===logicalKey&&planOpen(x.status));
-      if(same){result.push({op:'existing',id:same.id,expectedRevision:same.revision,legacy:raw.legacy});continue;}
+      const candidate={...p,...identity,sourceEventIds};
+      let same=draft.plans.find(x=>x.logicalKey===logicalKey),proof;
+      const refinesId=raw.refinesPlanId||p.refinesPlanId;
+      if(refinesId){same=draft.plans.find(x=>x.id===refinesId);if(!same)throw Error('同义细化引用的计划不存在');
+        proof=equivalentPlans(same,candidate,draft,{...context,refinesPlanId:same.id});if(!proof&&same.logicalKey!==logicalKey)throw Error('细化计划身份没有通过核对');}
+      if(!same){const match=findEquivalentPlan(draft,candidate,context);
+        if(match?.ambiguous){const id='plan-proposal-'+hash([context.fishId,context.owner,context.persona,context.ownerInstructionRevision,match.candidateIds.sort(),identity.windowStart,identity.windowEnd]).slice(0,24);
+          const operation={op:'propose-refinement',id,candidateIds:match.candidateIds,reason:match.reason,submission:structuredClone(p),sourceEventIds,at:now};
+          applyPlanChanges(draft,[operation],{now,roundId:round.id,recordHistory:false});result.push(operation);continue;}
+        if(match){same=match.old;proof=match.proof;}}
+      if(p.logicalKey&&p.logicalKey!==logicalKey&&p.logicalKey!==same?.logicalKey)throw Error('模型给出的逻辑身份未通过程序核对');
+      if(same){
+        if(planTerminal(same.status)||same.status==='needs_review'){result.push({op:'existing',id:same.id,expectedRevision:same.revision,legacy:raw.legacy});continue;}
+        const patch=refinementPatch(same,candidate,{sourceEventIds,evidenceIds,proof:proof||{identity:semanticPlan(same,draft,context)}});
+        const changed=Object.keys(patch).some(k=>JSON.stringify(same[k])!==JSON.stringify(patch[k]));
+        const operation=changed?{op:'update',id:same.id,expectedRevision:same.revision,patch,evidenceIds,legacy:raw.legacy,submittedPlan:p,semanticReason:proof?.reason||'existing-program-identity'}:{op:'existing',id:same.id,expectedRevision:same.revision,legacy:raw.legacy};
+        applyPlanChanges(draft,[operation],{now,roundId:round.id,recordHistory:false});result.push(operation);continue;
+      }
       const id=same?.id||'plan-'+hash(logicalKey).slice(0,24);
       const value={...Object.fromEntries(fields.filter(k=>p[k]!==undefined).map(k=>[k,p[k]])),...identity,id,logicalKey,
         revision:same?.revision||1,status:p.status||'pending',nextAt:timestamp(p.nextAt),expiresAt:timestamp(p.expiresAt),
-        progress:norm(p.progress),sourceEventIds,sourceEvidenceIds:evidenceIds,lastCheckedAt:0,lastProgressAt:now,lastEvidenceFingerprint:'',
+        progress:norm(p.progress),constraints:constraintsOf(p),semanticAliases:[],refinements:[],semanticIdentity:semanticPlan({...p,...identity,sourceEventIds},draft,context),sourceEventIds,sourceEvidenceIds:evidenceIds,lastCheckedAt:0,lastProgressAt:now,lastEvidenceFingerprint:'',
         supersedes:[],mergedFrom:[],createdAt:now,updatedAt:now,legacyRequestedId:raw.requestedId||null};
       if(!planOpen(value.status))throw Error('新计划必须使用开放初态，终态需针对已有 ID 明确处置');
       if(same&&same.nextAt!==value.nextAt&&!p.businessAt&&!p.windowStart&&!p.windowEnd&&round.planId!==same.id)throw Error('计划业务窗口不明确，请用已有 ID 更新：'+same.id);
@@ -85,7 +101,7 @@ export function preparePlanChanges(l,input,{round={},now=Date.now(),fishId=''}={
       if(['complete','expire'].includes(op)&&!evidenceIds.length&&!(op==='expire'&&old.expiresAt&&now>=old.expiresAt))throw Error('计划终态需要真实证据或明确期限');
       if(op==='merge'){
         const target=draft.plans.find(p=>p.id===raw.targetId);
-        if(!target||target.id===old.id||target.logicalKey!==old.logicalKey)throw Error('仅允许归并同一逻辑事项');
+        if(!target||target.id===old.id||target.logicalKey!==old.logicalKey&&!equivalentPlans(old,target,draft,context))throw Error('仅允许归并同一逻辑事项');
         if(raw.targetExpectedRevision!==target.revision)throw Error('归并目标计划版本冲突');
       }
       if(op==='supersede'){const target=draft.plans.find(p=>p.id===raw.targetId);if(!target)throw Error('替代计划不存在');if(raw.targetExpectedRevision!==target.revision)throw Error('替代目标计划版本冲突');}
@@ -97,11 +113,17 @@ export function preparePlanChanges(l,input,{round={},now=Date.now(),fishId=''}={
   return result;
 }
 export function applyPlanChanges(l,changes,options={}){
-  const draft={plans:structuredClone(l.plans),planHistory:structuredClone(l.planHistory||[])};
-  applyPrepared(draft,changes,options);l.plans=draft.plans;if(options.recordHistory!==false)l.planHistory=draft.planHistory;
+  const draft={plans:structuredClone(l.plans),planHistory:structuredClone(l.planHistory||[]),planProposals:structuredClone(l.planProposals||[])};
+  applyPrepared(draft,changes,options);l.plans=draft.plans;l.planProposals=draft.planProposals;if(options.recordHistory!==false)l.planHistory=draft.planHistory;
 }
 function applyPrepared(l,changes,{now=Date.now(),roundId=null,recordHistory=true}={}){
   for(const change of changes||[]){
+    if(change.op==='propose-refinement'){
+      l.planProposals??=[];let row=l.planProposals.find(p=>p.id===change.id);
+      if(!row){row={id:change.id,status:'blocked',noticeOnly:true,modelWake:false,candidateIds:change.candidateIds,reason:change.reason,firstSeenAt:now,submissions:[],repeatCount:0};l.planProposals.push(row);}
+      if(!row.submissions.some(p=>JSON.stringify(p)===JSON.stringify(change.submission)))row.submissions.push(structuredClone(change.submission));
+      row.lastSeenAt=now;row.repeatCount++;row.sourceEventIds=unique([...(row.sourceEventIds||[]),...change.sourceEventIds]);continue;
+    }
     if(change.op==='existing'){if(!l.plans.some(p=>p.id===change.id&&p.revision===change.expectedRevision))throw Error('计划版本冲突');continue;}
     if(change.op==='create'){
       if(l.plans.some(p=>p.id===change.id||p.logicalKey===change.plan.logicalKey&&planOpen(p.status)))throw Error('计划身份在提交后发生变化');
@@ -127,13 +149,13 @@ function applyPrepared(l,changes,{now=Date.now(),roundId=null,recordHistory=true
     const changed=fields.some(k=>JSON.stringify(before[k])!==JSON.stringify(p[k]))||p.progress!==before.progress||change.targetId;
     if(changed){
       p.revision++;p.updatedAt=now;p.sourceEvidenceIds=unique([...(p.sourceEvidenceIds||[]),...(change.evidenceIds||[])]);
-      if(recordHistory)(l.planHistory??=[]).push({at:now,roundId,op:change.op,id:p.id,fromRevision:before.revision,toRevision:p.revision,before,patch:structuredClone(patch),evidenceIds:change.evidenceIds});
+      if(recordHistory)(l.planHistory??=[]).push({at:now,roundId,op:change.op,id:p.id,fromRevision:before.revision,toRevision:p.revision,before,patch:structuredClone(patch),submittedPlan:change.submittedPlan,semanticReason:change.semanticReason,evidenceIds:change.evidenceIds});
     }
   }
 }
 export function planEvidenceFingerprint(data,plan){
   const s=data.state||{},where=s.where||{},doing=s.doing;
-  const events=(data.life?.queue||[]).filter(q=>(plan.sourceEventIds||[]).includes(q.id)||plan.waitCondition?.eventId===q.id);
+  const events=(data.life?.queue||[]).filter(q=>(plan.sourceEventIds||[]).includes(q.id)||plan.waitCondition?.eventId===q.id||(q.relatedPlanIds||[]).includes(plan.id));
   return hash({where:{kind:where.kind,id:where.place?.id||where.area?.id||where.to?.id,arrive:where.arrive},doing,
     body:{ill:s.body?.ill,full:s.body?.full,energy:s.body?.energy},money:s.money,
     events:events.map(q=>[q.id,q.eventVersion||1,q.status])});
@@ -144,7 +166,7 @@ export function advancePlans(l,data,now){
     if(p.expiresAt&&now>=p.expiresAt){p.status='expired';p.revision++;p.updatedAt=now;continue;}
     if(p.status==='waiting_event'){
       const f=planEvidenceFingerprint(data,p),w=p.waitCondition||{};
-      const event=w.kind==='event'&&(l.queue||[]).some(q=>q.provenance?.trusted&&q.t>(p.lastCheckedAt||0)&&(w.eventId?q.id===w.eventId:w.eventKind&&q.kind===w.eventKind)&&(!w.subject||q.sender===w.subject)&&((p.sourceEventIds||[]).includes(q.id)||(q.relatedPlanIds||[]).includes(p.id)||w.eventId===q.id));
+      const event=w.kind==='event'&&(l.queue||[]).some(q=>q.provenance?.trusted&&q.t>Math.max(p.lastCheckedAt||0,w.after||0)&&(w.eventId?q.id===w.eventId:(w.eventKinds||[w.eventKind]).includes(q.kind))&&(!w.subject||q.sender===w.subject)&&((p.sourceEventIds||[]).includes(q.id)||(q.relatedPlanIds||[]).includes(p.id)||w.eventId===q.id||w.trustedOnly===true&&/^.+#\d+$/.test(w.subject||'')&&w.subject===q.sender));
       const stage=w.kind==='time'&&w.at>0&&now>=w.at&&p.lastTimeWake!==w.at;
       if(event||stage||w.kind==='state'&&f!==p.lastEvidenceFingerprint){
         p.status='pending';p.nextAt=now;p.revision++;p.updatedAt=now;p.lastWakeFingerprint=f;

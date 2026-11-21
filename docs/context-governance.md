@@ -6,7 +6,7 @@ Canonical sources are extensions/aurabot/fish-world and extensions/aurabot/histo
 
 Requires Node 22.13+ and compatible Aurabot 1.3.0-beta.1 module APIs. The extensions use Node built-ins; DSH supplies sessionQuery, Session and tool services. No credentials, models or databases are bundled.
 
-    node scripts/set-context-module-version.js fish-world 1.3.0
+    node scripts/set-context-module-version.js fish-world 1.3.1
     node scripts/set-context-module-version.js history-vault 0.2.2
     node scripts/build-context-modules.js
     node scripts/run-tests.js context-governance.test.js
@@ -20,6 +20,8 @@ Repeat the updater for history-vault. Without --extension the entry retains its 
 backgroundContextEnabled controls only background world life. backgroundContextRounds defaults to 16 completed successful life rounds, range 8–64; calls and retries do not increment it. In-flight tools and unsettled delivery pin the current window. Confirmed stopped recovery can open a bounded read-only window while retaining unknown evidence. Disabling stops further rotation while continuing the current window. Identity, quotas, request IDs, cooldowns and failures remain in the same runtime ledger.
 
 Fish-world runtime schema is now 3, life schema 2. The ledger retains all plans and exact source evidence; current-task context carries at most 12 related plans, eight events and a few current alerts. Keyed changes replace whole-plan-array retransmission. Source history is scoped to owned windows with ten-record / about 4000-character pages and lossless part references. Startup estimates include visible history, tool schemas and unknown wrapper reserve; final llm/stream checks the official complete request. See extensions/aurabot/fish-world/README.md for thresholds, cost semantics and controls.
+
+Fish-world 1.3.1 adds verified semantic refinements and local blocked proposals, exact ordered native actions and auditable historical maintenance. Work fallback, same-plan checks and peer cooldown use ten minutes; ordinary idle observation uses thirty minutes. User quotas, spending limits, work hours and sharing settings are retained. See the fish-world README and scripts/review-fish-world-ledger.js --help. The maintenance protocol keeps original bytes and all row history; no additional schema bump or database is introduced.
 
 ## Owner-private settings and existing compression
 

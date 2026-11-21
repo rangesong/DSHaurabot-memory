@@ -1,3 +1,4 @@
+import {isExactFishIdentity} from './action-sequence.mjs';
 import {completedWindowRound,bindWindow,buildTaskPrompt} from './world-window.mjs';
 import {advancePlans,preparePlanChanges,applyPlanChanges,finishPlanCheck,planEvidenceFingerprint} from './plans.mjs';
 import {candidates,admission,reserveRound,effectiveNow,quotaAlert,closeOldAlerts,isQuotaDelivery,observeSatisfiedEvents,estimateTokens} from './governance.mjs';
@@ -9,7 +10,7 @@ import {workHoursAllowed} from './work-hours.mjs';
 export const WORLD='mcp__fish-world__';
 export const worldNames=['now','history','find','profile','go','do','say','friends','update','guide'].map(n=>WORLD+'world_'+n);
 export const mutating=(name,args={})=>['go','do','say','update'].some(n=>name===WORLD+'world_'+n)||name===WORLD+'world_friends'&&args.action!=='list';
-const localNames=new Set(['fish_life_intent','fish_life_finish','fish_life_history']);
+const localNames=new Set(['fish_life_intent','fish_life_finish','fish_life_history','fish_life_action']);
 const textOf=r=>(r?.content||[]).filter(x=>x.type==='text').map(x=>x.text).join('\n');
 const canonical=v=>Array.isArray(v)?v.map(canonical):v&&typeof v==='object'?Object.fromEntries(Object.keys(v).sort().map(k=>[k,canonical(v[k])])):v;
 const fingerprint=(name,args)=>JSON.stringify([name,canonical(args)]);
@@ -57,7 +58,7 @@ export class LifeEngine {
     try{return await this.tickOnce();}finally{this.ticking=false;}
   }
   async tickOnce(){
-    if(this.closed||this.bridge.fatal)return;
+    if(this.closed||this.bridge.fatal||this.maintenanceBusy)return;
     const id=this.identity(),l=this.l,c=this.cfg,now=effectiveNow(l,this.clock());
     if(l.owner&&l.owner!==id.owner||l.persona&&l.persona!==id.persona){
       this.blocked('主人或人格已改变，请重新核对身份后恢复');
@@ -155,6 +156,7 @@ export class LifeEngine {
   }
   intent(input){
     const r=this.l.round;if(!r||r.status!=='running'||!r.observation)throw Error('先取得本轮 world_now 真实回执');
+    if(!r.identityConfirmed)throw Error('先调用 world_profile({}) 核对本鱼身份，再登记意图；也可使用 fish_life_action 自动完成前置步骤');
     let args;try{args=JSON.parse(input.arguments);}catch{throw Error('arguments 需要完整 JSON 对象');}
     if(!mutating(input.tool,args))throw Error('不是世界变更工具');
     const cost=Number(input.cost),category=input.category,c=this.cfg;
@@ -184,7 +186,7 @@ export class LifeEngine {
     if(isBackground&&!world&&!localNames.has(name)&&name!=='run_code')return '世界后台仅允许世界、计划和汇报能力';
     if(!world)return;
     if(!isBackground&&!isOwner)return;
-    if(this.closed||this.bridge.fatal||!this.authorized())return '世界模块已停止或状态不可写';
+    if(this.closed||this.maintenanceBusy||this.bridge.fatal||!this.authorized())return '世界模块已停止或状态不可写';
     if(isBackground){
       if(!r||r.sessionId!==exec.agent?.session?.id||r.status!=='running'||r.revision!==this.l.revision||this.cfg.stopped||!this.cfg.autonomy||this.cfg.observeOnly)return '本轮已停止、会话不匹配或主人改变安排';
       if(r.calls>=this.cfg.maxCalls||now-r.startedAt>=this.cfg.turnMs)return '达到本轮调用/时间上限';
@@ -211,8 +213,8 @@ export class LifeEngine {
     const uncertain=isError&&/timeout|timed out|超时|abort|ECONNRESET|断线|not connected/i.test(text);
     this.change(l=>{
       const entry=l.journal.find(x=>x.id===exec.callId);if(entry)Object.assign(entry,{status:uncertain?'uncertain':isError?'failed':'confirmed',isError,result:text,finishedAt:this.clock()});
-      const r=l.round;if(r&&exec.agent?.session?.id===r.sessionId){r.receipts.push({id:exec.callId,tool:exec.name,text,isError});if(exec.name===WORLD+'world_now'&&!isError)r.observation=text;
-        if(exec.name===WORLD+'world_profile'&&!exec.arguments?.fish&&!isError)r.identityConfirmed=text.replace(/\s/g,'').includes(this.bridge.data.fishId.replace(/\s/g,''));}
+      const r=l.round;if(r&&exec.agent?.session?.id===r.sessionId){r.receipts.push({id:exec.callId,tool:exec.name,text,isError});if(exec.name===WORLD+'world_now'&&!isError){r.observation=text;r.observationId=exec.callId;r.intent=null;}
+        if(exec.name===WORLD+'world_profile'&&!exec.arguments?.fish&&!isError)r.identityConfirmed=!!r.observation&&isExactFishIdentity(text,this.bridge.data.fishId);}
       if(r&&uncertain){r.status='stopping';r.stopReason='世界调用结果不确定，先停止并核对';l.recovery=true;}
       if(l.externalPending?.callId===exec.callId)l.externalPending=null;
     });this.lock=null;
@@ -245,10 +247,10 @@ export class LifeEngine {
     if(completedWork.some(q=>!reconciliations.some(x=>x.eventId===q.id))&&!r.receipts.some(x=>x.tool===WORLD+'world_do'&&!x.isError))throw Error('工作标记完成需要 world_do 成功回执；过期或受阻请如实标记');
     if(input.importance!=='routine'&&!input.facts?.length)throw Error('重要分享需要真实回执编号');
     const facts=(input.facts||[]).map(id=>r.receipts.findLast(x=>(x.id===id||x.tool===id)&&!x.isError)?.id);
-    if(facts.some(id=>!id))throw Error('分享依据不属于本轮成功回执；可填完整世界工具名');
+    if(facts.some(id=>!id))throw Error('分享依据不属于本轮成功回执；facts 只填下列精确 id 或完整 tool，不附说明：'+JSON.stringify(r.receipts.filter(x=>!x.isError).map(({id,tool})=>({id,tool}))));
     const operations=preparePlanChanges(this.l,input,{round:r,now:this.clock(),fishId:this.bridge.data.fishId});
     this.change(l=>{l.round.report={...input,reconciliations,facts,summary:clean(input.summary).slice(0,2000),share:clean(input.share).slice(0,1000),planChanges:operations};});
-    return {ok:true,preparedPlans:operations.map(op=>({op:op.op,id:op.id,revision:op.plan?.revision??op.expectedRevision})),message:'回合报告已准备，结束本轮后原子提交；沿用以上程序计划 ID。QQ 投递独立核对。'};
+    return {ok:true,preparedPlans:operations.map(op=>({op:op.op,id:op.id,revision:op.plan?.revision??op.expectedRevision,candidateIds:op.candidateIds,status:op.op==='propose-refinement'?'blocked-local':undefined})),message:'回合报告已准备，结束本轮后原子提交；沿用以上程序计划 ID。QQ 投递独立核对。'};
   }
   end(completed,error=''){
     if(!this.l.round)return;
@@ -270,12 +272,12 @@ export class LifeEngine {
           const success=r.receipts.filter(x=>!x.isError&&mutating(x.tool));
           if(success.length&&(p.trigger==='arrive'||p.trigger==='done'))(p.satisfiedStages??=[]).push({kind:p.trigger,at:now,expectedAt:p.nextAt||0,roundId:r.id,receiptIds:success.map(x=>x.id)});
         }
-        l.nextIdle=Math.max(now+this.cfg.normalMinGapMs,timestamp(report.nextAt)||now+this.cfg.idleMs);
+        l.nextIdle=Math.max(now+this.cfg.idleMs,timestamp(report.nextAt)||now+this.cfg.idleMs);
         if(r.readOnly){l.recovery=false;l.verification=false;}
         if(report.share&&['urgent','important'].includes(report.importance))l.outbox.push({id:r.id,at:now,importance:report.importance,text:report.share,facts:report.facts,state:'pending',owner:l.owner,persona:l.persona});
       }else {l.recovery=true;l.backoffUntil=now+300000;}
       if(valid)completedWindowRound(l,r);
-      l.journal.push({id:r.id,at:now,type:'round',kind:r.kind,status:valid?'completed':'uncertain',summary:report?.summary||error,receipts:r.receipts.map(x=>x.id),memory:valid&&report.importance!=='routine'?'pending':'none'});
+      l.journal.push({id:r.id,at:now,type:'round',kind:r.kind,status:valid?'completed':'uncertain',summary:report?.summary||error,receipts:r.receipts.map(x=>x.id),actionSequences:structuredClone(r.actionSequences||{}),memory:valid&&report.importance!=='routine'?'pending':'none'});
       endCostRound(l,{...r,finishedAt:now},valid);
       const reservation=l.scheduler?.reservations.find(x=>x.roundId===r.id);if(reservation)reservation.status=valid?'completed':'uncertain';
       l.round=null;

@@ -2,6 +2,7 @@ export function historyPage(l,args={}){
  const offset=Math.max(0,Number(args.offset)||0),part=Math.max(0,Number(args.part)||0),limit=10;
  let rows;
  if(args.kind==='plans')rows=l.plans;
+ else if(args.kind==='proposals')rows=l.planProposals||[];
  else if(args.kind==='events')rows=l.queue;
  else if(args.kind==='journal')rows=l.journal;
  else rows=l.contextWindow?.windows||[];
