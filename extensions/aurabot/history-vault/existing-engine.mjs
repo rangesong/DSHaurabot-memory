@@ -2,12 +2,35 @@ import fs from 'node:fs';import {createHash} from 'node:crypto';
 const hash=s=>createHash('sha256').update(s).digest('hex');
 function localOrigin(value){const u=new URL(value);if(u.protocol!=='http:'||!['127.0.0.1','localhost','[::1]'].includes(u.hostname)||u.username||u.password||u.pathname!=='/'||u.search||u.hash)throw Error('压缩引擎地址必须是无凭据的本机 HTTP origin');return u.origin;}
 const readJson=(file,fallback)=>fs.existsSync(file)?JSON.parse(fs.readFileSync(file)):fallback;
+// Only the read-only manifest probe races a short deadline. No mutation or
+// source projection is started until it succeeds; failed engines cool down.
+export function createEngineProbe({fetcher=fetch,now=Date.now,timeoutMs=350,retryAfterMs=60000}={}){
+ let origin='',retryAt=0,inFlight=null;
+ return async value=>{
+  const target=localOrigin(value);if(target!==origin){origin=target;retryAt=0;inFlight=null;}
+  if(now()<retryAt)return {held:'engine-probe-cooldown',retryAfterMs:retryAt-now()};
+  if(inFlight)return inFlight;
+  const controller=new AbortController();let timer;
+  const task=(async()=>{
+   try{
+    const manifest=await Promise.race([
+     (async()=>{const r=await fetcher(target+'/__bili/plugin/manifest',{signal:controller.signal});if(!r.ok)throw Error('manifest unavailable');return r.json();})(),
+     new Promise((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(Error('manifest deadline'));},timeoutMs);})
+    ]);
+    if(!manifest||typeof manifest.version!=='string'||typeof manifest.commit!=='string')throw Error('invalid manifest');
+    return {ok:true,manifest};
+   }catch{if(origin===target)retryAt=now()+retryAfterMs;return {held:'engine-probe-unavailable',retryAfterMs};}
+   finally{clearTimeout(timer);controller.abort();}
+  })();
+  inFlight=task;try{return await task;}finally{if(inFlight===task)inFlight=null;}
+ };
+}
 export function externalSummaryEnabled(value){if(!value||typeof value!=='object')return false;for(const[k,v]of Object.entries(value)){if(k==='externalSummary'&&v?.enabled===true)return true;if(externalSummaryEnabled(v))return true;}return false;}
 export function autoBenefit({beforeTokens,savedTokens,freshToCachedRatio=50,expectedReuse=128}){const saved=Math.max(0,savedTokens),after=Math.max(0,beforeTokens-saved),rebuildExtra=after*Math.max(0,freshToCachedRatio-1),paybackRequests=saved>0?Math.ceil(rebuildExtra/saved):Infinity;return {allowed:Number.isFinite(paybackRequests)&&expectedReuse>=Math.ceil(paybackRequests*1.25),paybackRequests,expectedReuse,assumedFreshToCachedRatio:freshToCachedRatio,fullRebuildAssumed:true};}
-export async function existingImageProof(api,cfg,scope,{fetcher=fetch}={}){
+export async function existingImageProof(api,cfg,scope,{fetcher=fetch,manifest}={}){
  const plan=readJson(api.dataDir('context-governance-plan.json'),null),p=plan?.imageCompatibility;
  if(!p?.verified||!p.allImageRefsBlocked||!p.noImagesInCompressedSubstrate||!p.allExistingBlocksPreservedEvenIfAllImagesRemoved||!plan.backupReceipt?.verified||JSON.stringify(plan.scope)!==JSON.stringify(scope))return false;
- const r=await fetcher(localOrigin(cfg().contextCompressionOrigin)+'/__bili/plugin/manifest',{signal:AbortSignal.timeout(5000)});if(!r.ok)return false;const manifest=await r.json();return manifest.version===p.engineVersion&&manifest.commit===p.engineCommit;
+ if(!manifest){const r=await fetcher(localOrigin(cfg().contextCompressionOrigin)+'/__bili/plugin/manifest',{signal:AbortSignal.timeout(5000)});if(!r.ok)return false;manifest=await r.json();}return manifest.version===p.engineVersion&&manifest.commit===p.engineCommit;
 }
 export async function maybeAutoTextPlan(api,cfg,{scope,sourceEvents,apply=true,fetcher=fetch,now=Date.now()}={}){
  const c=cfg();if(c.contextTextBatchEnabled===false)return {held:'batch-switch-off'};if(c.contextMemoEnabled===false)return {held:'memo-switch-off'};

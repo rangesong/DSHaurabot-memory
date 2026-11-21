@@ -1,6 +1,6 @@
 import {createHash,randomUUID} from 'node:crypto';
 import {appendFileSync,readFileSync,writeFileSync,renameSync,existsSync} from 'node:fs';
-import {applyExistingPlan,existingImageProof,maybeAutoTextPlan} from './existing-engine.mjs';
+import {applyExistingPlan,existingImageProof,maybeAutoTextPlan,createEngineProbe} from './existing-engine.mjs';
 const hash=v=>createHash('sha256').update(typeof v==='string'?v:JSON.stringify(v)).digest('hex');
 const canonical=v=>Array.isArray(v)?v.map(canonical):v&&typeof v==='object'?Object.fromEntries(Object.keys(v).sort().map(k=>[k,canonical(v[k])])):v;
 function imageIdentity(b){const copy=structuredClone(b);if(copy.attachment)delete copy.attachment.name;return canonical(copy);}
@@ -80,7 +80,7 @@ export function planContextGovernance(events,{sessionId,chatId,persona,retainTur
  const edits=[...mutes.values()].map(({event,message,reason})=>({start:event.seq,end:event.seq,sources:[event.seq],message,type:event.type,data:event.type==='user/message'?message:{...event.data,message},reason})).concat(ranges.map(r=>({...r,type:'user/message',data:r.message,reason:r.message.source.reason}))).sort((a,b)=>a.start-b.start);
  return {edits,stats};
 }
-export function installMemoContextDedup(api,cfg){
+export function installMemoContextDedup(api,cfg,{engineProbe=createEngineProbe()}={}){
  let closed=false,prepared=0,last=null;const requests=[],offs=[];const service=n=>{try{return api.dsh?.get?.(n);}catch{return null;}};
  const chatOf=sid=>api.core.hub.chatOfSession(sid)||'',owner=()=>String(api.config().ownerQQ||''),persona=()=>String(api.config().persona?.current||'default');
  const isTarget=sid=>chatOf(sid)==='private:'+owner();
@@ -89,8 +89,10 @@ export function installMemoContextDedup(api,cfg){
   const sid=agent?.session?.id;if(closed||!sid||!isTarget(sid)||cfg().contextDedupEnabled===false)return {held:'disabled-or-not-owner'};
   const query=service('sessionQuery');if(!query?.readSurface)return {held:'supported-sessionQuery-unavailable'};
   const scope={sessionId:sid,chatId:chatOf(sid),persona:persona()},existing=cfg().contextEngine!=='host';
+  const readiness=existing?await engineProbe(cfg().contextCompressionOrigin):null;
+  if(existing&&!readiness.ok){last={sessionId:sid,...readiness,applied:false};return last;}
   const engineResult=existing?await applyExistingPlan(api,cfg,{...scope,apply}):null;
-  const imagesAllowed=cfg().contextImagesEnabled!==false&&(!existing||await existingImageProof(api,cfg,scope));
+  const imagesAllowed=cfg().contextImagesEnabled!==false&&(!existing||await existingImageProof(api,cfg,scope,{manifest:readiness.manifest}));
   const [snapshot,raw]=await Promise.all([query.readSurface(sid),query.readSession(sid)]),cut=agent.session.seq;
   if(raw.events.at(-1)?.seq!==snapshot.capturedThroughSeq)throw Error('会话读取期间已变化，保留本次原文');
   const events=[...snapshot.events,...raw.events.filter(e=>e.type==='turn/start'||e.type==='turn/end')].sort((a,b)=>a.seq-b.seq);

@@ -70,3 +70,43 @@ test('a huge stopped recovery rotates to a bounded read-only window without forg
 });
 
 test('host preparation matches real message text for incremental snapshots and reuses an unbound window',async()=>{const f=fixture({backgroundContextEnabled:true});chooseWindow(f.e,'fixture');f.e.l.contextWindow.windows.at(-1).sessionId='session-fixture';f.e.l.sessionId='session-fixture';const round={events:[],planIds:[]};let messages=[];const agent={session:{id:'session-fixture',deriveMessages:()=>messages}},api={dsh:{get:n=>n==='tools'?{schemas:()=>[]}:null},dataDir:(...p)=>path.join(process.env.THINKSTAR_TEST_TMP,'prepare-delta',...p)},opts={scope:()=> 'fixture',identity:()=>({}),findAgent:()=>agent};const first=await prepareRequest(f.e,api,opts,f.e.prompt([],round),round);messages=[{content:[{type:'text',text:first.prompt}]}];const second=await prepareRequest(f.e,api,opts,f.e.prompt([],round),round);assert.ok(second.prompt.includes('状态变化'));assert.ok(!second.prompt.includes('完整交接快照'));});
+
+test('failed recovery rounds persist increasing backoff across restart without replaying unknown actions or refunding quotas',async()=>{
+ const f=fixture();let submitted=0;
+ enqueue(f.bridge.data,{kind:'talk',text:'合成待核对事件',t:start},start);const eventId=f.e.l.queue.at(-1).id;
+ f.e.l.queue.at(-1).status='uncertain';f.e.l.recovery=true;
+ const evidence={id:'unknown-action',tool:'mcp__fish-world__world_do',args:'{"request_id":"never-repeat"}',status:'uncertain'};
+ f.e.l.journal.push(evidence);f.e.l.outbox.push({id:'unknown-send',state:'uncertain'});
+ f.e.host.run=async()=>{submitted++;f.e.bind('session-fixture',worldNames);throw Error('synthetic provider failure');};
+ for(const [index,minutes]of [5,15,30,60,60].entries()){
+  await f.e.tick();await flush();assert.equal(f.e.l.round.status,'stopping');
+  // A submission rejection is counted only when that same round is durably ended.
+  assert.equal(f.e.l.failureBackoff?.streak??0,index);await f.e.tick();await flush();
+  assert.equal(f.e.l.failureBackoff.streak,index+1);assert.equal(f.e.l.backoffUntil,f.now()+minutes*60000);
+  const ended=structuredClone(f.e.l);f.e.end(false);assert.deepEqual(f.e.l,ended,'duplicate end cannot count or alter the ledger twice');
+  assert.equal(f.e.l.queue.find(q=>q.id===eventId).status,'uncertain');assert.deepEqual(f.e.l.journal.find(j=>j.id===evidence.id),evidence);
+  assert.equal(f.e.l.outbox.find(o=>o.id==='unknown-send').state,'uncertain');
+  assert.equal(f.e.l.scheduler.reservations.length,index+1);assert.ok(f.e.l.scheduler.reservations.every(r=>r.status==='uncertain'));
+  assert.equal(Object.values(f.e.l.days).reduce((n,d)=>n+d.work,0),index+1);assert.equal(submitted,index+1);
+  const until=f.e.l.backoffUntil,host=f.e.host,settings=f.e.settings,identity=f.e.identity;
+  f.bridge.data=JSON.parse(JSON.stringify(f.bridge.data));
+  f.e=new LifeEngine({bridge:f.bridge,host,settings,identity,clock:f.now});
+  f.time(until-1);await f.e.tick();await flush();assert.equal(submitted,index+1,'no model probe while backing off');
+  f.time(until);
+ }
+});
+
+test('only a valid complete round resets consecutive failures; explicit probe keeps its existing one-time timing override',async()=>{
+ const f=fixture();const failed=(id)=>{f.e.l.round={id,status:'running',kind:'recovery',readOnly:true,events:[],planIds:[],receipts:[],observation:'',startedAt:f.now()};f.e.end(false);};
+ failed('first');assert.equal(f.e.l.failureBackoff.streak,1);
+ f.e.control('probe','主人明确核对');assert.equal(f.e.l.backoffUntil,0);assert.equal(f.e.l.failureBackoff.streak,1);
+ // A model returning without observation and finish is still a failed round.
+ f.e.l.round={id:'incomplete',status:'running',kind:'recovery',readOnly:true,events:[],planIds:[],receipts:[],observation:'',startedAt:f.now()};f.e.end(true);
+ assert.equal(f.e.l.failureBackoff.streak,2);assert.equal(f.e.l.backoffUntil,f.now()+15*60000);
+ const reservations=structuredClone(f.e.l.scheduler?.reservations||[]),evidence=structuredClone(f.e.l.journal);
+ f.e.l.round={id:'complete',status:'running',kind:'recovery',readOnly:true,events:[],planIds:[],receipts:[],observation:'真实合成观察',startedAt:f.now()};
+ f.e.finish({events:[],plans:[],importance:'routine',summary:'完整核对',facts:[],share:''});f.e.end(true);
+ assert.equal(f.e.l.failureBackoff.streak,0);assert.equal(f.e.l.backoffUntil,0);assert.equal(f.e.l.recovery,false);
+ assert.deepEqual(f.e.l.scheduler?.reservations||[],reservations);assert.deepEqual(f.e.l.journal.slice(0,evidence.length),evidence);
+ failed('after-success');assert.equal(f.e.l.failureBackoff.streak,1);assert.equal(f.e.l.backoffUntil,f.now()+5*60000);
+});

@@ -14,6 +14,7 @@ const localNames=new Set(['fish_life_intent','fish_life_finish','fish_life_histo
 const textOf=r=>(r?.content||[]).filter(x=>x.type==='text').map(x=>x.text).join('\n');
 const canonical=v=>Array.isArray(v)?v.map(canonical):v&&typeof v==='object'?Object.fromEntries(Object.keys(v).sort().map(k=>[k,canonical(v[k])])):v;
 const fingerprint=(name,args)=>JSON.stringify([name,canonical(args)]);
+const failureBackoffMs=[5,15,30,60].map(minutes=>minutes*60000);
 export class LifeEngine {
   constructor({bridge,host,settings=()=>({}),authorized=()=>true,identity=()=>({}),clock=Date.now}){
     Object.assign(this,{bridge,host,settings,authorized,identity,clock});this.closed=false;this.lock=null;this.agent=null;this.deliveryBusy=false;this.alertVisits=new Map();
@@ -275,7 +276,12 @@ export class LifeEngine {
         l.nextIdle=Math.max(now+this.cfg.idleMs,timestamp(report.nextAt)||now+this.cfg.idleMs);
         if(r.readOnly){l.recovery=false;l.verification=false;}
         if(report.share&&['urgent','important'].includes(report.importance))l.outbox.push({id:r.id,at:now,importance:report.importance,text:report.share,facts:report.facts,state:'pending',owner:l.owner,persona:l.persona});
-      }else {l.recovery=true;l.backoffUntil=now+300000;}
+        l.failureBackoff={streak:0,lastRoundId:r.id,at:now,delayMs:0};l.backoffUntil=0;
+      }else {
+        const prior=l.failureBackoff?.streak,streak=Math.min(Number.MAX_SAFE_INTEGER,(Number.isSafeInteger(prior)&&prior>0?prior:0)+1);
+        const delayMs=failureBackoffMs[Math.min(streak-1,failureBackoffMs.length-1)];
+        l.failureBackoff={streak,lastRoundId:r.id,at:now,delayMs};l.recovery=true;l.backoffUntil=now+delayMs;
+      }
       if(valid)completedWindowRound(l,r);
       l.journal.push({id:r.id,at:now,type:'round',kind:r.kind,status:valid?'completed':'uncertain',summary:report?.summary||error,receipts:r.receipts.map(x=>x.id),actionSequences:structuredClone(r.actionSequences||{}),memory:valid&&report.importance!=='routine'?'pending':'none'});
       endCostRound(l,{...r,finishedAt:now},valid);
