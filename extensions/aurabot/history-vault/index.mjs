@@ -183,7 +183,7 @@ export function shouldRecord(row, { recordGroups = true, groupList = '', private
 export default {
   id: 'history-vault',
   name: '跨会话记忆',
-  version:"0.2.3",
+  version:"0.2.4",
   api: 1,
   description: '三层存储跨会话保留聊天细节，分层读取，会话归档后细节不丢，重复压缩不重复花模型调用',
   panel: 'panel.js',

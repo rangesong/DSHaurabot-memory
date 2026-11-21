@@ -32,7 +32,7 @@ export async function existingImageProof(api,cfg,scope,{fetcher=fetch,manifest}=
  if(!p?.verified||!p.allImageRefsBlocked||!p.noImagesInCompressedSubstrate||!p.allExistingBlocksPreservedEvenIfAllImagesRemoved||!plan.backupReceipt?.verified||JSON.stringify(plan.scope)!==JSON.stringify(scope))return false;
  if(!manifest){const r=await fetcher(localOrigin(cfg().contextCompressionOrigin)+'/__bili/plugin/manifest',{signal:AbortSignal.timeout(5000)});if(!r.ok)return false;manifest=await r.json();}return manifest.version===p.engineVersion&&manifest.commit===p.engineCommit;
 }
-export async function maybeAutoTextPlan(api,cfg,{scope,sourceEvents,apply=true,fetcher=fetch,now=Date.now()}={}){
+export async function maybeAutoTextPlan(api,cfg,{scope,sourceEvents,apply=true,fetcher=fetch,now=Date.now(),scanBudgetMs=2000,scanClock=()=>performance.now()}={}){
  const c=cfg();if(c.contextTextBatchEnabled===false)return {held:'batch-switch-off'};if(c.contextMemoEnabled===false)return {held:'memo-switch-off'};
  const file=api.dataDir('context-governance-plan.json'),plan=readJson(file,null);if(!plan?.backupReceipt?.verified||JSON.stringify(plan.scope)!==JSON.stringify(scope)||plan.ranges.some(r=>!r.applied))return {held:'pending-plan-or-unverified-scope'};
  const done=sourceEvents.filter(e=>e.type==='turn/end'&&e.data.reason?.kind==='completed').length,stateFile=api.dataDir('context-engine-auto.json'),state=readJson(stateFile,null),batch=Math.min(64,Math.max(8,Number(c.contextTextBatchTurns)||16)),cooldown=Math.max(10,Number(c.contextTextCooldownMinutes)||20)*60000;
@@ -41,13 +41,23 @@ export async function maybeAutoTextPlan(api,cfg,{scope,sourceEvents,apply=true,f
  if(done-state.completed<batch||now-state.lastAt<cooldown||now-(state.lastAttemptAt||0)<300000)return {held:'waiting-batch-boundary',completedSinceBatch:done-state.completed,batch};
  if(!apply)return {ready:true,completedSinceBatch:done-state.completed,batch};
  save({...state,lastAttemptAt:now});
- const origin=localOrigin(c.contextCompressionOrigin),get=async p=>{const r=await fetcher(origin+p,{signal:AbortSignal.timeout(10000)});return r.ok?r.json():null;},status=await get('/__bili/plugin/status?conversationId='+encodeURIComponent(scope.sessionId));if(!status?.ok)return {held:'engine-unavailable'};
- const refs=new Set();for(const range of (status.compressibleRanges||[]).toReversed()){const lo=Number(/^m(\d+)$/.exec(range.startRef)?.[1]),hi=Number(/^m(\d+)$/.exec(range.endRef)?.[1]);if(!lo||!hi||hi<lo)continue;for(let n=hi;n>=lo&&refs.size<128;n--)refs.add('m'+String(n).padStart(5,'0'));if(refs.size>=128)break;}
- const messages=[];for(const ref of [...refs].sort((a,b)=>Number(a.slice(1))-Number(b.slice(1)))){const m=await get('/__bili/sessions/'+encodeURIComponent(scope.sessionId)+'/message?ref='+ref);if(m?.ok&&m.role==='user'&&!m.truncated)messages.push({id:ref,role:m.role,contentType:'text',text:m.text,wireIndex:ref});}
- const {planWireGovernance}=await import('./wire-governance.mjs'),wire=planWireGovernance({messages,state:{messageRefs:{byRaw:Object.fromEntries(messages.map(m=>[m.id,m.id]))}},sourceEvents,scope,settings:{memo:true,images:false,tools:false}});
- const tokenWeight=s=>{const cjk=(s.match(/[\u3400-\u9fff]/g)||[]).length;return cjk*.6+(s.length-cjk)/4;},saved=wire.ranges.reduce((n,r)=>{const original=messages.find(m=>m.id===r.startRef);return n+Math.max(0,tokenWeight(original?.text||'')-tokenWeight(r.summary));},0);
- if(saved<Math.max(8000,Number(c.contextTextMinTokens)||20000))return {held:'below-net-benefit-threshold',estimatedTokens:saved};
- const benefit=autoBenefit({beforeTokens:Number(status.contextTokens)||Number(status.contextView?.sentTotal)||1000000,savedTokens:saved,freshToCachedRatio:Math.max(1,Number(c.contextFreshToCachedRatio)||50),expectedReuse:Math.max(1,Number(c.contextExpectedReuseRequests)||128)});if(!benefit.allowed)return {held:'cache-rebuild-payback-too-long',estimatedTokens:saved,benefit};
+ // Only optional reads share this deadline. Once writing a verified plan or
+ // submitting compression starts, await its normal transaction and receipt.
+ const origin=localOrigin(c.contextCompressionOrigin),controller=new AbortController(),expires=scanClock()+scanBudgetMs,expired=Object.assign(Error('Optional context scan deadline'),{code:'CONTEXT_SCAN_DEADLINE'});
+ let timer,wire,saved,benefit;
+ const deadline=new Promise((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(expired);},scanBudgetMs);});
+ const check=()=>{if(controller.signal.aborted||scanClock()>=expires)throw expired;};
+ const get=async p=>{check();const value=await Promise.race([(async()=>{const r=await fetcher(origin+p,{signal:controller.signal});return r.ok?r.json():null;})(),deadline]);check();return value;};
+ try{
+  const status=await get('/__bili/plugin/status?conversationId='+encodeURIComponent(scope.sessionId));if(!status?.ok)return {held:'engine-unavailable'};
+  const refs=new Set();for(const range of (status.compressibleRanges||[]).toReversed()){const lo=Number(/^m(\d+)$/.exec(range.startRef)?.[1]),hi=Number(/^m(\d+)$/.exec(range.endRef)?.[1]);if(!lo||!hi||hi<lo)continue;for(let n=hi;n>=lo&&refs.size<128;n--)refs.add('m'+String(n).padStart(5,'0'));if(refs.size>=128)break;}
+  const messages=[];for(const ref of [...refs].sort((a,b)=>Number(a.slice(1))-Number(b.slice(1)))){const m=await get('/__bili/sessions/'+encodeURIComponent(scope.sessionId)+'/message?ref='+ref);if(m?.ok&&m.role==='user'&&!m.truncated)messages.push({id:ref,role:m.role,contentType:'text',text:m.text,wireIndex:ref});}
+  const {planWireGovernance}=await import('./wire-governance.mjs');check();wire=planWireGovernance({messages,state:{messageRefs:{byRaw:Object.fromEntries(messages.map(m=>[m.id,m.id]))}},sourceEvents,scope,settings:{memo:true,images:false,tools:false}});
+  const tokenWeight=s=>{const cjk=(s.match(/[\u3400-\u9fff]/g)||[]).length;return cjk*.6+(s.length-cjk)/4;};saved=wire.ranges.reduce((n,r)=>{const original=messages.find(m=>m.id===r.startRef);return n+Math.max(0,tokenWeight(original?.text||'')-tokenWeight(r.summary));},0);check();
+  if(saved<Math.max(8000,Number(c.contextTextMinTokens)||20000))return {held:'below-net-benefit-threshold',estimatedTokens:saved};
+  benefit=autoBenefit({beforeTokens:Number(status.contextTokens)||Number(status.contextView?.sentTotal)||1000000,savedTokens:saved,freshToCachedRatio:Math.max(1,Number(c.contextFreshToCachedRatio)||50),expectedReuse:Math.max(1,Number(c.contextExpectedReuseRequests)||128)});if(!benefit.allowed)return {held:'cache-rebuild-payback-too-long',estimatedTokens:saved,benefit};check();
+ }catch(error){if(error===expired||controller.signal.aborted)return {held:'scan-read-deadline',budgetMs:scanBudgetMs};throw error;}
+ finally{clearTimeout(timer);controller.abort();}
  wire.backupReceipt=plan.backupReceipt;wire.imageCompatibility=plan.imageCompatibility;wire.automatic=true;wire.estimatedTokens=saved;wire.benefit=benefit;fs.writeFileSync(file+'.tmp',JSON.stringify(wire,null,2));fs.renameSync(file+'.tmp',file);
  const result=await applyExistingPlan(api,cfg,{...scope,fetcher});if(result.applied>0)save({sessionId:scope.sessionId,completed:done,lastAt:now,lastAttemptAt:now});return result;
 }

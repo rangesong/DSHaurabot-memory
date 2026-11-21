@@ -12,7 +12,7 @@ import {testRuntimeRoot} from '../scripts/lib/test-workspace.js';
 import {snapshotContextModule} from '../scripts/lib/context-module-updater.js';
 import {createHash} from 'node:crypto';
 const DAY=86400000,NOW=Date.parse('2026-11-19T21:00:00+08:00');
-const builtin='D:/DSH/profiles/desktop/node_modules/dsh-aurabot-qq/src',modules='D:/DSH/plugins-data/aurabot/modules';
+const builtin='D:/DSH/profiles/desktop/node_modules/dsh-aurabot-qq/src',modules=process.env.THINKSTAR_NATIVE_MODULES_ROOT||'D:/DSH/plugins-data/aurabot/modules';
 const enable=r=>r.updateConfig({region:'W5',values:{group_policy_enabled:1},expected_version:r.configVersion});
 const temporary=name=>fs.mkdtempSync(path.join(testRuntimeRoot(null),name));
 const quiet={info(){},warn(){},error(){},debug(){}};

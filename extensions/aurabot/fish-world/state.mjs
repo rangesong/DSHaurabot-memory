@@ -1,7 +1,8 @@
 import {createHash,randomUUID} from 'node:crypto';
 
 export const clean=v=>String(v??'').replace(/\bfwr?_[A-Za-z0-9_-]+/g,'[密钥已隐藏]');
-export const dayKey=t=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(t);
+const dayFormatter=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'});
+export const dayKey=t=>dayFormatter.format(t);
 export const eventId=(fish,x)=>createHash('sha256').update(JSON.stringify([fish,x.kind,x.t,x.text])).digest('hex');
 export const defaults={normalMinGapMs:180000,urgentMinGapMs:30000,urgentMaxRoundsPer10Min:4,planRecheckMinMs:600000,unchangedPlanRoundLimit:1,roundPromptEstimatedTokenLimit:12000,visibleContextEstimatedTokenLimit:48000,requestAdmissionEstimatedTokenLimit:64000,costGuardEnabled:false,costSoftLimitCny:2,costStopLimitCny:3,backgroundContextEnabled:false,backgroundContextRounds:16,chatBodyInjectionEnabled:true,chatLocationInjectionEnabled:true,autonomy:true,idleEnabled:true,idleWorkHours:'',activityWorkHours:'',sharing:true,observeOnly:false,workLimit:96,idleLimit:24,socialLimit:24,shareLimit:6,singleSpend:40,dailySpend:100,stocks:false,gifts:false,turnMs:90000,maxCalls:6,idleMs:1800000,sleepMs:3600000,workMs:600000,socialMs:600000,quietStart:23,quietEnd:8};
 export const newLife=(now=Date.now())=>({version:2,ownerInstructionRevision:0,planHistory:[],planProposals:[],alerts:[],scheduler:{lastStartedAt:0,starts:[],urgentClaims:{},reservations:[],budgetDay:""},costs:{records:[],seen:{},rounds:[]},createdAt:now,owner:'',persona:'',revision:0,controls:{},queue:[],plans:[],journal:[],outbox:[],round:null,days:{},cooldowns:{},nextIdle:now+defaults.idleMs,lastToolAt:0,backoffUntil:0,faults:{},blocked:'',sessionId:'',toolNames:[],recovery:false});

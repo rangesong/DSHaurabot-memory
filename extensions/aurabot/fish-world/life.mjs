@@ -293,7 +293,8 @@ export class LifeEngine {
   async remember(id){
     const row=this.l.journal.find(x=>x.id===id);if(!row||row.memory!=='pending')return;
     try{const receipt=await this.host.remember({text:'【鱼的世界自身经历；非主人原话】'+row.summary+'；事实回执：'+row.receipts.join(',')+'；QQ 是否送达另见投递记录。',saidAt:row.at,importance:.7,tags:['fish-world'],meta:{id}});
-      this.change(l=>{l.journal.find(x=>x.id===id).memory=receipt?'recorded':'pending';});
+      const recorded=!!receipt&&receipt.ok!==false&&!receipt.error&&!receipt.isError&&receipt.debug!==true;
+      this.change(l=>{l.journal.find(x=>x.id===id).memory=recorded?'recorded':'pending';});
     }catch{this.blocked('重要记忆等待 Thinkstar 正式入口恢复');}
   }
   async deliver(){

@@ -2,6 +2,8 @@
 
 Canonical source: extensions/aurabot/fish-world. Node built-ins only, no new database or model assets. Requires compatible Aurabot module API with tools guards, session/event, llm/stream, Agent.whenIdle, sessionQuery and core/usage.js. Existing persona, MCP, QQ, keys, quotas, sharing and non-blocking prompt refresh remain in place.
 
+The fixed Asia/Shanghai date formatter is reused during local cost summaries; day boundaries and quota keys are unchanged. Important-experience writes remain pending when the memory service explicitly returns `ok:false`, an error, `isError`, or a debug-only no-write result. Normal native insert/update and Thinkstar ingest receipts remain accepted. Existing five-minute pending-memory retries apply; no model or network probe is added, and prior recorded history is not reclassified.
+
 ## Scheduling and plans
 
 Every start, including owner arrangements, recovery, work inspection and plan continuation, uses one durable admission/reservation path. normalMinGapMs=180000; urgentMinGapMs=30000; urgentMaxRoundsPer10Min=4; planRecheckMinMs=600000; unchangedPlanRoundLimit=1. Only trusted work/doorbell/health event versions qualify for an urgent exception. This still consumes the existing daily category quota. Ordinary idle observation is 30 minutes; work fallback, same-plan recheck and same-sender social cooldown are ten minutes. Existing queued messages also honor the current peer cooldown. A wording revision does not bypass the plan interval. Unknown submission reservations are retained, never refunded into retries.
