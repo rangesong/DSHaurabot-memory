@@ -1,4 +1,5 @@
 import {createHash,randomUUID} from 'node:crypto';
+import {linkOwnerTaskEvent} from './owner-tasks.mjs';
 
 export const clean=v=>String(v??'').replace(/\bfwr?_[A-Za-z0-9_-]+/g,'[密钥已隐藏]');
 const dayFormatter=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'});
@@ -22,7 +23,8 @@ export function enqueue(data,x,now){
   });
   const related=c.bucket==='social'?matched:matched.length===1?matched:[];
   const matching=related.length>0;
-  l.queue.push({...x,id,...c,sender,eventVersion:1,provenance:{trusted:true,source:kindSource(x.kind)},relatedPlanIds:related.map(p=>p.id),receivedAt:now,status:c.priority===9||(['arrive','done'].includes(x.kind)&&!matching&&!/下班|结算|生病/.test(x.text))?'observed':'pending',notBefore:c.bucket==='social'?Math.max(now,l.cooldowns[sender]||0):now});
+  const event={...x,id,...c,sender,eventVersion:1,provenance:{trusted:true,source:kindSource(x.kind)},relatedPlanIds:related.map(p=>p.id),receivedAt:now,status:c.priority===9||(['arrive','done'].includes(x.kind)&&!matching&&!/下班|结算|生病/.test(x.text))?'observed':'pending',notBefore:c.bucket==='social'?Math.max(now,l.cooldowns[sender]||0):now};
+  linkOwnerTaskEvent(l,event,now);l.queue.push(event);
   // Keep pending work intact. Completed history is bounded independently.
   const referenced=new Set(l.plans.flatMap(p=>p.sourceEventIds||[]));
   const closed=l.queue.filter(e=>terminal(e.status)),old=[...closed.filter(e=>referenced.has(e.id)),...closed.filter(e=>!referenced.has(e.id)).slice(-400)];

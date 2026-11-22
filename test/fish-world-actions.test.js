@@ -56,6 +56,11 @@ test('same round duplicate and concurrent input performs the mutation once and r
  const f=fixture(),[a,b]=await Promise.all([run(f),run(f)]);assert.equal(a.receiptId,b.receiptId);
  const c=await run(f);assert.equal(c.reused,true);assert.equal(c.receiptId,a.receiptId);assert.equal(f.trace.length,3);
 });
+
+test('a model short world_do alias uses the same guarded native action and duplicate key',async()=>{
+ const f=fixture(),result=await run(f,{...input,tool:'world_do'});assert.equal(result.ok,true);assert.equal(result.tool,input.tool);assert.equal(f.trace.at(-1).name,input.tool);
+ const again=await run(f);assert.equal(again.reused,true);assert.equal(f.trace.length,3);
+});
 test('wrong identity never submits an intent or mutation',async()=>{
  for(const options of [{otherFish:true},{profileText:'fixture-fish#10\n合成身份'}]){const f=fixture(options),r=await run(f);assert.equal(r.ok,false);assert.equal(r.status,'blocked');assert.deepEqual(f.effects,['now','profile'].map(n=>PREFIX+n));assert.equal(f.engine.l.round.intent,null);}
 });

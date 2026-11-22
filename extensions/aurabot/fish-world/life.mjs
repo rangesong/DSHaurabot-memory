@@ -1,4 +1,5 @@
 import {isExactFishIdentity} from './action-sequence.mjs';
+import {rememberOwnerTurn,taskForExecution,ownerTaskGuard,noteOwnerTaskResult,advanceOwnerTasks,endOwnerTaskRound,worldToolName} from './owner-tasks.mjs';
 import {completedWindowRound,bindWindow,buildTaskPrompt} from './world-window.mjs';
 import {advancePlans,preparePlanChanges,applyPlanChanges,finishPlanCheck,planEvidenceFingerprint} from './plans.mjs';
 import {candidates,admission,reserveRound,effectiveNow,quotaAlert,closeOldAlerts,isQuotaDelivery,observeSatisfiedEvents,estimateTokens} from './governance.mjs';
@@ -10,7 +11,7 @@ import {workHoursAllowed} from './work-hours.mjs';
 export const WORLD='mcp__fish-world__';
 export const worldNames=['now','history','find','profile','go','do','say','friends','update','guide'].map(n=>WORLD+'world_'+n);
 export const mutating=(name,args={})=>['go','do','say','update'].some(n=>name===WORLD+'world_'+n)||name===WORLD+'world_friends'&&args.action!=='list';
-const localNames=new Set(['fish_life_intent','fish_life_finish','fish_life_history','fish_life_action']);
+const localNames=new Set(['fish_life_intent','fish_life_finish','fish_life_history','fish_life_action','fish_life_task']);
 const textOf=r=>(r?.content||[]).filter(x=>x.type==='text').map(x=>x.text).join('\n');
 const canonical=v=>Array.isArray(v)?v.map(canonical):v&&typeof v==='object'?Object.fromEntries(Object.keys(v).sort().map(k=>[k,canonical(v[k])])):v;
 const fingerprint=(name,args)=>JSON.stringify([name,canonical(args)]);
@@ -18,6 +19,7 @@ const failureBackoffMs=[5,15,30,60].map(minutes=>minutes*60000);
 export class LifeEngine {
   constructor({bridge,host,settings=()=>({}),authorized=()=>true,identity=()=>({}),clock=Date.now}){
     Object.assign(this,{bridge,host,settings,authorized,identity,clock});this.closed=false;this.lock=null;this.agent=null;this.deliveryBusy=false;this.alertVisits=new Map();
+    this.ownerPromptTokens=new WeakMap();
     this.change(l=>{
       for(const p of l.plans){p.nextAt=timestamp(p.nextAt);p.trigger=/到|抵达/.test(p.trigger)?'arrive':/结束|完成/.test(p.trigger)?'done':p.trigger;}
       if(l.journal.some(x=>x.status==='executing'))l.recovery=true;
@@ -31,13 +33,23 @@ export class LifeEngine {
   get cfg(){return {...defaults,...this.settings(),...this.l.controls};}
   change(fn){return this.bridge.change(d=>fn(d.life,d));}
   blocked(reason){if(this.l.blocked!==reason)this.change(l=>{l.blocked=reason;});}
+  ownerTurn(text,info){
+    const token=info.turnToken;let turnKey=typeof token==='string'||typeof token==='number'?token:undefined;
+    if(token&&typeof token==='object'){if(!this.ownerPromptTokens.has(token))this.ownerPromptTokens.set(token,randomUUID());turnKey=this.ownerPromptTokens.get(token);}
+    turnKey??=(info.archiveMessages||[]).map(m=>m.id).filter(Boolean).join(',')||Math.floor(this.clock()/1000);
+    let task;this.change(l=>{task=rememberOwnerTurn(l,this.identity(),{text,sessionId:info.sessionId,turnKey,confirmedWorld:info.confirmedWorld===true},this.clock());
+      if(task&&!task.optional){l.revision++;if(l.round){l.round.status='stopping';l.round.stopReason='主人有新的持久任务，先交接';}}});
+    if(task&&!task.optional&&this.l.round)void this.host.cancel(this.l.round.sessionId).catch(()=>{});return task;
+  }
   snapshot(){const l=structuredClone(this.l);for(const [key,visit]of this.alertVisits){const a=l.alerts?.find(a=>a.key===key);if(a){a.repeatCount+=visit.count;a.lastSeenAt=visit.lastSeenAt;}}return {...l,usage:budget(l,effectiveNow(l,this.clock())),costSummary:costSummary(l,this.clock()),settings:this.cfg,locked:!!this.lock};}
   control(action,text=''){
+    if(action==='plan'&&(this.l.ownerTasks||[]).some(t=>t.status==='active'&&t.instruction===clean(text)))return;
     const changes={pauseIdle:{idleEnabled:false},pauseAuto:{autonomy:false},pauseShare:{sharing:false},observe:{observeOnly:true},stop:{stopped:true},resume:{stopped:false,autonomy:true,idleEnabled:true,observeOnly:false},share:{sharing:true}};
     if(!changes[action]&&!['plan','probe'].includes(action))throw Error('未知控制');
     this.change((l,d)=>{Object.assign(l.controls,changes[action]||{});l.revision++;
       if(action==='probe'){if(l.round)throw Error('后台正在忙碌');l.recovery=true;l.verification=true;l.verificationInstruction=clean(text).slice(0,500);l.backoffUntil=0;}
       if(action==='plan'){
+        for(const t of l.ownerTasks||[])if(t.status==='active'){t.status='cancelled';t.phase='cancelled';t.revision++;t.history.push({at:this.clock(),kind:'owner-changed-plan',instruction:clean(text)});}
         l.ownerInstructionRevision=(l.ownerInstructionRevision||0)+1;(l.ownerInstructions??=[]).push({text:clean(text).slice(0,2000),at:this.clock(),revision:l.ownerInstructionRevision});l.ownerInstructions=l.ownerInstructions.slice(-20);
         for(const p of l.plans)if(planOpen(p.status)){const before=structuredClone(p);p.status='cancelled';p.revision=(p.revision||0)+1;p.updatedAt=this.clock();p.changeReason='主人改变安排';(l.planHistory??=[]).push({at:this.clock(),op:'owner-superseded',id:p.id,before});}
         for(const q of l.queue)if(!terminal(q.status)&&q.bucket==='idle')q.status='cancelled';
@@ -98,9 +110,10 @@ export class LifeEngine {
       if(!await this.host.idle(l.sessionId))return this.blocked('恢复核对等待旧 Agent 与维护任务停止');
       if(!this.lock&&!l.externalPending)this.change(x=>{for(const j of x.journal)if(j.status==='executing'&&j.sessionId===x.sessionId){j.originalExecutionStatus='executing';j.status='uncertain';j.stopConfirmedAt=now;}});
     }
-    this.change((life,data)=>{advancePlans(life,data,now);observeSatisfiedEvents(life);closeOldAlerts(life,now);settleMissingUsage(life,now);});
+    this.change((life,data)=>{advancePlans(life,data,now);advanceOwnerTasks(life,data,now);observeSatisfiedEvents(life);closeOldAlerts(life,now);settleMissingUsage(life,now);});
     const choices=candidates(this.l,this.bridge.data,c,now);let chosen,decision,firstBlocked;
     for(const task of choices){
+      if(task.ownerTaskId&&this.host.ready){const mission=this.l.ownerTasks.find(t=>t.id===task.ownerTaskId),source=mission?.currentSessionId||mission?.source?.sessionId;if(source&&!await this.host.ready(source)){firstBlocked??={reason:'等待主人当前世界回合收尾'};break;}}
       const check=admission(this.l,task,c,{now,costSummary:costSummary(this.l,now)});
       if(check.allowed){chosen=task;decision=check;break;}
       firstBlocked??=check;if(check.budgetExhausted)this.noteQuotaAlert(check.bucket);if(/工作时间/.test(check.reason))break;
@@ -114,7 +127,7 @@ export class LifeEngine {
     const planIds=[...new Set([chosen.planId,...group.flatMap(q=>q.relatedPlanIds||[])].filter(Boolean))].filter(id=>this.l.plans.some(p=>p.id===id)).slice(0,12);
     const round={id:randomUUID(),sessionId:'',kind:chosen.kind,bucket:chosen.bucket,priority:chosen.priority,
       events:group.map(e=>e.id),sourceEventIds:[...new Set([...group.filter(e=>this.l.queue.some(q=>q.id===e.id)).map(e=>e.id),...(chosen.sourceEventIds||[])])],
-      planId:chosen.planId||planIds[0]||null,planIds,planRevision:chosen.planRevision||null,reason:clean(chosen.plan?.goal||chosen.text).slice(0,1000),
+      planId:chosen.planId||planIds[0]||null,planIds,ownerTaskId:chosen.ownerTaskId||null,planRevision:chosen.planRevision||null,reason:clean(chosen.plan?.goal||chosen.text).slice(0,1000),
       startedAt:decision.now,status:'running',revision:this.l.revision,calls:0,receipts:[],observation:'',intent:null,report:null,readOnly:chosen.kind==='recovery'};
     const prompt=this.prompt(group,round);
     let prepared;
@@ -156,6 +169,7 @@ export class LifeEngine {
     this.change(l=>{l.sessionId=sessionId;bindWindow(l,sessionId);l.toolNames=names.filter(n=>n.startsWith(WORLD));if(l.round)l.round.sessionId=sessionId;});
   }
   intent(input){
+    input={...input,tool:worldToolName(input.tool)};
     const r=this.l.round;if(!r||r.status!=='running'||!r.observation)throw Error('先取得本轮 world_now 真实回执');
     if(!r.identityConfirmed)throw Error('先调用 world_profile({}) 核对本鱼身份，再登记意图；也可使用 fish_life_action 自动完成前置步骤');
     let args;try{args=JSON.parse(input.arguments);}catch{throw Error('arguments 需要完整 JSON 对象');}
@@ -188,6 +202,9 @@ export class LifeEngine {
     if(!world)return;
     if(!isBackground&&!isOwner)return;
     if(this.closed||this.maintenanceBusy||this.bridge.fatal||!this.authorized())return '世界模块已停止或状态不可写';
+    const deferred=!isBackground&&isOwner&&mutating(name,exec.arguments)&&this.l.ownerTaskContexts?.[exec.agent?.session?.id]?.deferred;
+    if(deferred)this.ownerTurn(deferred.text,{sessionId:exec.agent.session.id,turnToken:deferred.turnKey,confirmedWorld:true});
+    const taskDenied=ownerTaskGuard(this.l,this.bridge.data,exec,isBackground,now);if(taskDenied)return taskDenied;
     if(isBackground){
       if(!r||r.sessionId!==exec.agent?.session?.id||r.status!=='running'||r.revision!==this.l.revision||this.cfg.stopped||!this.cfg.autonomy||this.cfg.observeOnly)return '本轮已停止、会话不匹配或主人改变安排';
       if(r.calls>=this.cfg.maxCalls||now-r.startedAt>=this.cfg.turnMs)return '达到本轮调用/时间上限';
@@ -203,7 +220,7 @@ export class LifeEngine {
     }
     if(this.lock||this.l.externalPending)return '另一个世界工具仍在执行，请等待回执';
     this.change(l=>{if(isBackground){l.round.calls++;budget(l,now).calls++;if(mutating(name,exec.arguments)){budget(l,now).spend+=l.round.intent.cost;l.round.intent=null;}}
-      l.journal.push({id:exec.callId,at:now,sessionId:exec.agent?.session?.id,round:isBackground?r.id:null,tool:name,args:clean(JSON.stringify(exec.arguments)),status:'executing'});l.lastToolAt=now;
+      l.journal.push({id:exec.callId,at:now,sessionId:exec.agent?.session?.id,round:isBackground?r.id:null,ownerTaskId:taskForExecution(l,exec)?.id||null,tool:name,args:clean(JSON.stringify(exec.arguments)),status:'executing'});l.lastToolAt=now;
       if(!isBackground)l.externalPending={callId:exec.callId,sessionId:exec.agent?.session?.id};});
     this.lock={callId:exec.callId,sessionId:exec.agent?.session?.id};
   }
@@ -213,7 +230,7 @@ export class LifeEngine {
     const text=clean(textOf(result)),isError=!!result.isError||result.value?.ok===false||/\[E_[A-Z_]+\]/.test(text);
     const uncertain=isError&&/timeout|timed out|超时|abort|ECONNRESET|断线|not connected/i.test(text);
     this.change(l=>{
-      const entry=l.journal.find(x=>x.id===exec.callId);if(entry)Object.assign(entry,{status:uncertain?'uncertain':isError?'failed':'confirmed',isError,result:text,finishedAt:this.clock()});
+      const entry=l.journal.find(x=>x.id===exec.callId);if(entry){Object.assign(entry,{status:uncertain?'uncertain':isError?'failed':'confirmed',isError,result:text,finishedAt:this.clock()});noteOwnerTaskResult(l,this.bridge.data,entry,this.clock());}
       const r=l.round;if(r&&exec.agent?.session?.id===r.sessionId){r.receipts.push({id:exec.callId,tool:exec.name,text,isError});if(exec.name===WORLD+'world_now'&&!isError){r.observation=text;r.observationId=exec.callId;r.intent=null;}
         if(exec.name===WORLD+'world_profile'&&!exec.arguments?.fish&&!isError)r.identityConfirmed=!!r.observation&&isExactFishIdentity(text,this.bridge.data.fishId);}
       if(r&&uncertain){r.status='stopping';r.stopReason='世界调用结果不确定，先停止并核对';l.recovery=true;}
@@ -258,6 +275,7 @@ export class LifeEngine {
     const r=this.l.round,valid=completed&&['running','finished'].includes(r.status)&&r.report&&r.observation&&!this.lock,now=this.clock();
     this.change(l=>{
       const report=r.report;
+      endOwnerTaskRound(l,r,valid,now);
       for(const e of l.queue)if(r.events.includes(e.id)){
         const disposition=report?.events?.find(x=>x.id===e.id)?.status;
         e.status=valid&&['completed','expired','blocked'].includes(disposition)?disposition:'uncertain';

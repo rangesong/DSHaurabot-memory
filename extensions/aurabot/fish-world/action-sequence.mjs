@@ -1,4 +1,5 @@
 import {createHash,randomUUID} from 'node:crypto';
+import {worldToolName} from './owner-tasks.mjs';
 const PREFIX='mcp__fish-world__world_';
 const origins=new WeakMap(),running=new WeakMap(),guardRejections=new WeakMap(),NOT_SUBMITTED=Symbol('local-guard-not-submitted');
 const canonical=value=>Array.isArray(value)?value.map(canonical):value&&typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map(k=>[k,canonical(value[k])])):value;
@@ -96,6 +97,7 @@ const clone=value=>structuredClone(value);
  * Raw arguments/results and origin mappings remain in the module's real durable journal.
  */
 export async function executeSequencedAction({engine,tools,exec},input){
+ input={...input,tool:worldToolName(input?.tool)};
  const r=engine?.l?.round;
  if(!r)throw Error('没有当前后台回合');
  const roundId=r.id;

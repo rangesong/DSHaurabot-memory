@@ -1,4 +1,5 @@
 import {createHash} from 'node:crypto';
+import {ownerTaskCandidates} from './owner-tasks.mjs';
 import {dayKey,planOpen} from './state.mjs';
 import {provedWorkSource} from './plans.mjs';
 import {workHoursAllowed} from './work-hours.mjs';
@@ -20,7 +21,7 @@ export function realUrgency(task){
 export function candidates(l,data,cfg,now){
   if(l.recovery)return [{id:'recovery',kind:'recovery',priority:1,bucket:'work',text:'只读核对未知结果，禁止重复变更。',group:l.queue.filter(q=>q.status==='uncertain').slice(0,8)}];
   const pending=l.queue.filter(q=>['pending','blocked'].includes(q.status)&&q.notBefore<=now).map(q=>({...q,...taskClass(q,l)})).sort((a,b)=>a.priority-b.priority||a.t-b.t||a.id.localeCompare(b.id));
-  const list=pending.map(q=>({...q,group:q.bucket==='social'?pending.filter(p=>p.bucket==='social'&&p.sender===q.sender).slice(0,8):[q]}));
+  const list=[...ownerTaskCandidates(l,now,data),...pending.map(q=>({...q,group:q.bucket==='social'?pending.filter(p=>p.bucket==='social'&&p.sender===q.sender).slice(0,8):[q]}))];
   const working=/work|打工|上班|零工/.test(JSON.stringify(data.state?.doing||''));
   if(working&&now-(l.lastToolAt||l.createdAt)>=cfg.workMs)list.push({id:'inspection',kind:'inspection',priority:1,bucket:'work',text:'工作兜底巡检；没有工作就等待。',group:[]});
   for(const p of l.plans.filter(p=>['pending','active'].includes(p.status)&&p.nextAt>0&&p.nextAt<=now).sort((a,b)=>a.nextAt-b.nextAt||a.id.localeCompare(b.id))){
@@ -29,14 +30,16 @@ export function candidates(l,data,cfg,now){
   const doing=data.state?.doing,end=Date.parse(doing?.until||doing?.endAt||data.state?.where?.arrive||'')||Number(doing?.endAt)||0;
   const long=!!doing||data.state?.figure?.asleep||data.state?.where?.kind==='trip';
   if(cfg.idleEnabled&&!working&&now>=l.nextIdle&&(!long||end>0&&end<=now))list.push({id:'idle',kind:'idle',priority:4,bucket:'idle',text:'照顾基本生活，允许保持现状并等待。',group:[]});
-  const seen=new Set();return list.sort((a,b)=>a.priority-b.priority||(a.t||a.plan?.nextAt||0)-(b.t||b.plan?.nextAt||0)).filter(c=>{const k=c.kind+':'+c.id;if(seen.has(k))return false;seen.add(k);return true;});
+  const ownerWaiting=(l.ownerTasks||[]).some(t=>t.status==='active'&&['travelling','working','waiting_event'].includes(t.phase));
+  const seen=new Set();return list.sort((a,b)=>a.priority-b.priority||(a.t||a.plan?.nextAt||0)-(b.t||b.plan?.nextAt||0)).filter(c=>{if(ownerWaiting&&c.priority>1&&!c.ownerTaskId&&!c.ownerTaskIds?.length)return false;const k=c.kind+':'+c.id;if(seen.has(k))return false;seen.add(k);return true;});
 }
 export function admission(l,task,cfg,{now,estimate,costSummary}={}){
   now=effectiveNow(l,now);
   const blocked=(reason,nextAllowedAt=0,extra={})=>({allowed:false,reason,nextAllowedAt,...extra});
   if(cfg.stopped||!cfg.autonomy||cfg.observeOnly)return blocked('自动行动已暂停');
   if(task.kind==='idle'&&!workHoursAllowed(cfg.idleWorkHours,now))return blocked('闲时生活不在设置的工作时间');
-  if(!['owner','recovery','idle'].includes(task.kind)&&!workHoursAllowed(cfg.activityWorkHours,now))return blocked('自动事件与计划不在设置的工作时间');
+  if(task.optional&&!workHoursAllowed(cfg.idleWorkHours,now))return blocked('有空时的主人安排不在设置的闲时工作时间');
+  if(!['owner','owner-task','recovery','idle'].includes(task.kind)&&!workHoursAllowed(cfg.activityWorkHours,now))return blocked('自动事件与计划不在设置的工作时间');
   if(!cfg.idleEnabled&&task.bucket==='idle')return blocked('闲时活动已暂停');
   const day=dayKey(now),used=l.days[day]?.[task.bucket]||0,limit=Number(cfg[task.bucket+'Limit']);
   if(used>=limit)return blocked(task.bucket+' 自动处理受阻：今日额度已用完',0,{budgetExhausted:true,bucket:task.bucket,day});
@@ -58,6 +61,7 @@ export function admission(l,task,cfg,{now,estimate,costSummary}={}){
     if(!p||!planOpen(p.status)||!['pending','active'].includes(p.status))return blocked('计划不再可执行');
     if(p.lastCheckedAt)next=Math.max(next,p.lastCheckedAt+cfg.planRecheckMinMs);
   }
+  if(task.ownerTaskId){const t=(l.ownerTasks||[]).find(t=>t.id===task.ownerTaskId);if(!t||t.status!=='active'||!['pending','ready'].includes(t.phase))return blocked('主人任务正在等待真实回执');if(t.lastCheckedAt)next=Math.max(next,t.lastCheckedAt+cfg.planRecheckMinMs);}
   if(now<next)return blocked(urgent?'紧急事件正在频率冷却':'普通回合或同一计划正在冷却',next);
   if(estimate){
     if(estimate.roundPromptTokens>cfg.roundPromptEstimatedTokenLimit)return blocked('本轮新增提示超过估算体积门槛');

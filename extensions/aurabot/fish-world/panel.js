@@ -26,6 +26,7 @@ return function Panel({toast}) {
         h('p',null,'待办'),
         ...s.life.queue.filter(q=>['pending','running','uncertain','blocked'].includes(q.status)).slice(-12).map(q=>h('p',{key:q.id},q.kind+'｜'+q.status+'｜'+q.text)),
         h('p',null,'生活计划'),
+        ...(s.life.ownerTasks||[]).filter(t=>t.status==='active').slice(-5).map(t=>h('p',{key:t.id},'主人安排：'+t.instruction+'｜'+t.phase+'｜下一步：'+t.nextStep)),
         s.life.historyReviewBatch?h('p',null,'历史待核对：'+s.life.historyReviewBatch.planIds.length+' 项已分组保留，不会自动补做。'):null,
         (s.life.planProposals?.length||0)>0?h('p',null,'待明确主题的计划：'+s.life.planProposals.length+' 项；原始提交已保留，不自动付费重试。'):null,
         ...s.life.plans.slice(-8).map(p=>h('p',{key:p.id},p.goal+'｜'+p.status+'｜'+p.nextStep+'｜'+(p.nextAt?at(p.nextAt):p.trigger))),
