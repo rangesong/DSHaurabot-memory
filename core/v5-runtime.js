@@ -331,7 +331,14 @@ export class V5Runtime {
       const accessAge=Math.max(0,(at-(m.last_strengthened_at??m.last_used_at??m.occurred_at??m.created_at))/DAY),access=Math.pow(2,-accessAge/this.config.W5.ordinary_half_life_days)*m.strength;
       const ordinaryTrace=m.protection==='P2'&&m.layer==='faint'&&m.importance<.45&&age!==null&&age>=this.config.W5.forget_after_days*2&&save<.4;
       if((m.protection==='P3'||ordinaryTrace)&&age!==null&&age>=this.config.W5.forget_after_days&&access+this.config.W5.low_value_recovery*.2<.25&&save<.5){items.push({id:m.id,scope:m.scope,action:'forget',target:'forgotten',revision:m.revision,reason:ordinaryTrace?'普通残迹已超过双倍遗忘周期、长期低可达且无保护依赖':'低价值、超期、可达性低且无保护依赖'});continue;}
-      if(age!==null&&age>=this.config.W5.lossy_after_days&&['P2','P3'].includes(m.protection)&&!['gist_only','gist_with_evidence'].includes(m.storage)&&!(m.layer==='faint'&&m.attributes.lossy_digest?.precision==='full')&&save<.6&&access<.75){items.push({id:m.id,scope:m.scope,action:'summarize',target:'faint',revision:m.revision,reason:'普通内容允许有损要旨化，关键条件另保'});continue;}
+      if(age!==null&&age>=this.config.W5.lossy_after_days&&['P2','P3'].includes(m.protection)&&!['gist_only','gist_with_evidence'].includes(m.storage)&&save<.6&&access<.75){
+        // Complete cold originals need no repeated pack when neither text nor layer would change.
+        // Re-evaluate the current source and ratio; a stale full-digest marker is insufficient.
+        const settled=m.kind==='raw'&&m.storage==='lossless_cold'&&(m.layer==='faint'||m.protection==='P2'&&m.layer==='warm');
+        const text=settled?this.body(m):null;
+        if(!settled||text===null||makeGist(text,this.config.W5.summary_ratio).lossy)items.push({id:m.id,scope:m.scope,action:'summarize',target:'faint',revision:m.revision,reason:'普通内容允许有损要旨化，关键条件另保'});
+        continue;
+      }
       if(m.kind==='raw'&&m.storage==='full_hot'&&age!==null&&age>=this.config.W5.recent_hours/24)items.push({id:m.id,scope:m.scope,action:'pack',target:'warm',revision:m.revision,reason:'近期窗口结束，原文无损冷存'});
     }
     // Any body reused by a protected or non-forgetting object cannot be physically forgotten.
