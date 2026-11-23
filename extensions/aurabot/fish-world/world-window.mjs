@@ -61,7 +61,7 @@ export function buildTaskPrompt(engine,events,round,memory=''){
   'ownerTasks 是主人当前尚未办完的原始要求，优先于临时生活安排。到达只完成路程，原始目的和后续步骤仍需执行。没有明确步骤时先 fish_life_task 登记1到8步：tool、完整JSON arguments、nextStep；go等待真实arrival，活动可指定waitFor=done及精确eventText，上工等待真实结算。步骤只由对应成功工具或真实通知推进；吃饭、换地点不能完成别的任务。结果未知不重做。多步任务不能只登记第一步。',
   'fish_life_finish 使用 planChanges 增量操作 create/update/complete/expire/abandon/block/supersede/merge；更新须已有 id、expectedRevision。新计划业务身份 topic/subject/stage/businessAt/windowStart/windowEnd 清晰。同一事项沿用程序稳定 id。换说法或增加条件使用 refinesPlanId 或 update，保留原条件；不是新建事项。新社交回合的相关计划已在快照中。替代和归并给 targetId/targetExpectedRevision。完成/到期必须真实证据 evidenceIds；历史 needs_review 不擅自激活。旧 plans 格式可兼容，但不重复发送完整计划簿。',
   '本轮每个真实事件 id 必须在 events 指定 completed/expired/blocked；计划 id 交给 planChanges，也兼容 events 中明确处置。未确认结果不可重做，恢复轮只读。工作标记完成需要 world_do 成功回执，已过期任务记 expired，不探索或打断班次。社交先按需 world_history 核对原话。',
-  '事实使用本轮成功工具回执 id 或完整工具名；计划、成功、失败、未知分别说明。重要结果才分享，沿用现有人格说话，1到3句话，routine不发；不得声称QQ已经发送，生活分享不讲内部设置或校验。',
+  '事实使用本轮成功工具回执 id 或完整工具名；计划、成功、失败、未知分别说明。重要结果才分享，沿用现有人格说话，1到3句话，routine不发；不得声称QQ已经发送，生活分享不讲内部设置或校验。QQ 只分享正常生活消息；系统故障、超时、通道异常和恢复核对只记录在 summary 或本地状态，不写入 share，没有正常生活结果时 share 留空。',
   round?.readOnly?'本轮是只读恢复窗口。不得重做未知变更；用 fish_life_history 按引用核对旧回执，结合现场确认。':'',
   memory].filter(Boolean).join('\n\n');
 }

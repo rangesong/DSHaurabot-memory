@@ -74,3 +74,53 @@ test('observation failure never prevents the original model call; receipt histor
   assert.equal(f.rows.get('recall-a').host_receipts.length,8);
   f.monitor.save=()=>{throw Error('synthetic write failure');};let calls=0;for await(const chunk of f.monitor.observe(f.request(),()=>{calls++;return f.stream();})){}assert.equal(calls,1);
 });
+
+function compressedFixture(){
+  const f=fixture(),route={provider:'synthetic-provider',model:'synthetic-model'},governance={enabled:true,contextDedupEnabled:true,contextEngine:'existing',contextCompressionOrigin:'http://127.0.0.1:18788'};
+  const config={enabled:true,ownerQQ:'100',modules:{'history-vault':{enabled:true}},ext:{'history-vault':governance}};
+  let connected=true,reads=0,events=[{seq:0,type:'assistant/message',time:900,data:{turn:1,message:{source:{kind:'model',...route},content:[{type:'text',text:'合成完成回复'}]},usage:{inputTokens:20000,cacheReadTokens:100000,outputTokens:30}}},{seq:1,type:'turn/end',time:901,data:{turn:1,reason:{kind:'completed'}}}];
+  Object.assign(f.session,{id:'session-a',seq:2,requestContext:()=>({...route,contextWindow:1000000}),snapshotEvents:()=>{reads++;return events;}});
+  f.api.config=()=>config;f.api.core={hub:{chatOfSession:()=> 'private:100'}};f.api.use=id=>id==='history-vault'?{preparationPolicyStatus:()=>({connected})}:null;
+  f.setOccupied(2600000);
+  return {...f,config,governance,route,setConnected:value=>connected=value,setEvents:value=>{events=value;f.session.seq++;},get events(){return events;},get reads(){return reads;}};
+}
+
+test('verified existing compression with completed same-route usage restores only a bounded supplemental allocation',t=>{
+  const f=compressedFixture(),options={sessionId:'session-a',cap:2048,stableCost:512,content:[{type:'text',text:'合成新问题'}]},started=performance.now();
+  const sized=f.monitor.budget(options);
+  assert.equal(sized.mode,'verified_compression_supplement');assert.equal(sized.available,1536);assert.equal(sized.occupied_estimate,2600000);
+  assert.equal(sized.compression_evidence.input_tokens,120000);assert.ok(sized.effective_input_estimate>120000&&sized.effective_input_estimate<121000);
+  assert.equal(sized.complete_final_window_known,false);assert.equal(sized.compression_evidence.source,'completed_session_provider_usage');
+  assert.equal(f.monitor.budget({...options,cap:8192,stableCost:0}).available,3072);
+  for(let i=0;i<100;i++)assert.equal(f.monitor.budget(options).available,1536);
+  assert.equal(f.reads,1,'unchanged session evidence is read once, not rescanned for fixed and dynamic packets');
+  t.diagnostic(JSON.stringify({kind:'synthetic-compression-budget',calls:102,elapsedMs:performance.now()-started,snapshotReads:f.reads,networkCalls:0,modelCalls:0}));
+});
+
+test('compression supplement refuses unverified routes, non-owner sessions, mismatched evidence and true final-window exhaustion',()=>{
+  const mutations=[f=>{f.governance.contextEngine='host';},f=>{f.governance.contextDedupEnabled=false;},f=>{f.config.modules['history-vault'].enabled=false;},f=>{f.governance.contextCompressionOrigin='https://not-local.invalid';},f=>f.setConnected(false),f=>{f.api.core.hub.chatOfSession=()=> 'private:other';},f=>f.setEvents(f.events.filter(e=>e.type!=='turn/end')),f=>f.setEvents(f.events.map(e=>e.type==='assistant/message'?{...e,data:{...e.data,message:{...e.data.message,source:{...e.data.message.source,provider:'other'}}}}:e)),f=>f.setEvents(f.events.map(e=>e.type==='assistant/message'?{...e,data:{...e.data,usage:{inputTokens:980000,outputTokens:1}}}:e)),f=>{f.services.tokenMeter.measure=()=>({totalTokens:2600000,baseline:{kind:'provider_usage'}});}];
+  for(const mutate of mutations){const f=compressedFixture();mutate(f);const sized=f.monitor.budget({sessionId:'session-a',cap:2048});assert.equal(sized.mode,'host_meter_estimate');assert.equal(sized.available,0);const reads=f.reads;assert.equal(f.monitor.budget({sessionId:'session-a',cap:2048}).available,0);assert.equal(f.reads,reads,'negative evidence is cached for this session sequence too');}
+  const f=fixture();f.setOccupied(12000);assert.equal(f.monitor.budget({sessionId:'session-a',cap:2048}).available,0,'uncompressed full windows retain the original guard');
+});
+
+test('long idle preserves unchanged successful evidence while stale evidence plus new context fails closed',()=>{
+  const idle=compressedFixture();idle.setClock(2*86400000);
+  assert.equal(idle.monitor.budget({sessionId:'session-a',cap:2048}).mode,'verified_compression_supplement');
+  const changed=compressedFixture();changed.setEvents([...changed.events,{seq:2,type:'user/message',time:1000,data:{content:[{type:'text',text:'合成新上下文'}]}}]);changed.setClock(2*86400000);
+  assert.equal(changed.monitor.budget({sessionId:'session-a',cap:2048}).available,0);
+  changed.setClock(1001);assert.equal(changed.monitor.budget({sessionId:'session-a',cap:2048}).mode,'verified_compression_supplement');
+});
+
+test('installed Session reads a bounded tail once per sequence for positive and negative compression evidence',async t=>{
+  if(!process.env.DSH_ASAR){t.skip('Set DSH_ASAR for the installed bounded Session API proof');return;}
+  const [{extractRuntime},{pathToFileURL},path]=await Promise.all([import('./helpers/extract-host-runtime.js'),import('node:url'),import('node:path')]);
+  const runtime=extractRuntime(process.env.DSH_ASAR,process.env.THINKSTAR_TEST_TMP),{Session}=await import(pathToFileURL(path.join(runtime,'node_modules/@deepseek-ai/dsh-session/lib/index.js')).href);
+  const f=compressedFixture(),rows=Array.from({length:3000},(_,seq)=>({seq,time:900,type:'user/message',surfaceOp:'append',data:{id:'synthetic-'+seq,role:'user',source:{kind:'aurabot'},content:[{type:'text',text:'合成历史占位，不是实际聊天。'}]}})),actual=Session.create('session-a',rows),reads=[];
+  const session={id:actual.id,get seq(){return actual.seq;},requestContext:f.session.requestContext,requestHeader:f.session.requestHeader,snapshotEvents(from,to){assert.equal(to,actual.seq);assert.equal(to-from,256);reads.push({from,to});return actual.snapshotEvents(from,to);}};
+  f.services.agents.get=()=>({session,model:{current:()=>f.route}});
+  const start=performance.now();for(let i=0;i<100;i++)assert.equal(f.monitor.budget({sessionId:'session-a',cap:2048}).available,0);assert.equal(reads.length,1);
+  actual.append([['assistant/message',{turn:1,step:1,message:{role:'assistant',source:{kind:'model',...f.route},content:[{type:'text',text:'合成完成回复'}]},usage:{inputTokens:20000,cacheReadTokens:100000,outputTokens:30}},{surfaceOp:'append'}],['turn/end',{turn:1,reason:{kind:'completed'}}]]);
+  f.setClock(Date.now()+1000);
+  for(let i=0;i<100;i++)assert.equal(f.monitor.budget({sessionId:'session-a',cap:2048}).mode,'verified_compression_supplement');assert.equal(reads.length,2);
+  assert.ok(reads.every(read=>read.from>0));t.diagnostic(JSON.stringify({kind:'installed-session-bounded-budget',events:actual.seq,calls:200,snapshotReads:reads.length,readEvents:reads.length*256,elapsedMs:performance.now()-start,modelCalls:0,networkCalls:0}));
+});

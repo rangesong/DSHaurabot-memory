@@ -28,3 +28,15 @@ test('unexpected source changes and paths outside the declared root are refused'
  const f=fixture('stale');fs.writeFileSync(path.join(f.host,'source.js'),'changed');await assert.rejects(updateWorkHours({...f}),/baseline/);
  const g=fixture('escape');g.manifest.entries[0].path='../outside';await assert.rejects(updateWorkHours({...g}),/Invalid relative path/);
 });
+test('failed replacement cleans its own temporary bytes and rollback never overwrites a parallel edit',async()=>{
+ const f=fixture('rollback-conflict'),rename=fs.renameSync;let failure;
+ fs.renameSync=(from,to)=>{
+  if(to===path.join(f.host,'source.js')){fs.writeFileSync(path.join(f.modules,'new.js'),'parallel edit\n');throw Error('synthetic rename failure');}
+  return rename(from,to);
+ };
+ try{await updateWorkHours({...f,apply:true,client:fakeClient()});assert.fail('must refuse failed install');}catch(error){failure=error;}finally{fs.renameSync=rename;}
+ assert.match(failure.message,/rename failure/);assert.deepEqual(failure.rollbackConflicts,['modules/new.js']);
+ assert.equal(fs.readFileSync(path.join(f.modules,'new.js'),'utf8'),'parallel edit\n');assert.deepEqual(fs.readFileSync(path.join(f.host,'source.js')),f.before);
+ assert.ok(!fs.readdirSync(f.host).some(name=>name.includes('.work-hours-')));
+ const receipt=JSON.parse(fs.readFileSync(failure.recoveryReceipt,'utf8'));assert.equal(receipt.status,'install-failed-rollback-conflicts');assert.deepEqual(receipt.retainedTemporary,[]);
+});

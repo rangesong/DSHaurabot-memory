@@ -160,7 +160,12 @@ export async function startThinkstar(api){
     if(!allowedChat(chatId)||!sourceAllowed(source,chatId))fail('来源不可用或已停记。');
     return runtime.rememberSource({scope,source_id,quote});
   }
-  const contextLimit=sessionId=>Math.min(runtime.config.W2.context_tokens,Math.max(256,Math.min(8192,Number(hostContext.isolatedCap(sessionId)??settings().contextTokens)||1536)));
+  const contextLimit=(sessionId,query='',origin='prompt')=>{
+    const isolated=hostContext.isolatedCap(sessionId),configured=Math.min(runtime.config.W2.context_tokens,Math.max(256,Math.min(8192,Number(isolated??settings().contextTokens)||1536)));
+    if(isolated!==undefined)return configured;
+    const explicit=origin==='tool'||/记得|回忆|想起|记住|之前|以前|上次|那次|当时|原话|记录|历史|昨天|前天|上周|上个月|去年/.test(String(query));
+    return Math.min(configured,explicit?3072:2048);
+  };
   function contextFor(chat,{sessionId=null}={}){
     const chatId=cleanId(chat?.chatId);if(settings().mode!=='active'||!allowedChat(chatId))return '';
     const scope=runtime.addScope(context(chatId)),state=runtime.store.state(scope.id),lifecycle=runtime.groupLifecycle();
@@ -222,7 +227,7 @@ export async function startThinkstar(api){
     const scope=runtime.addScope(context(chatId)),lifecycle=runtime.groupLifecycle(),onDemand=origin==='tool';
     const knownIds=new Set(recentMessages.map(m=>hostMessageId(m.id)).filter(Boolean));
     const host_message_ids=runtime.store.state(scope.id).source_refs.filter(id=>knownIds.has(hostMessageId(runtime.store.getSource(id)?.provenance.host_message_id)));
-    const configured=contextLimit(sessionId);
+    const configured=contextLimit(sessionId,query,origin);
     const stableCost=Math.ceil(contextFor(chat,{sessionId}).length/2);
     const sizing=Number.isFinite(availableTokens)?{mode:'caller_allocation',available:Math.min(Math.max(0,configured-stableCost),Math.max(0,availableTokens)),complete_final_window_known:false}:hostContext.budget({sessionId,content,stableCost,cap:configured});
     strategy??=runtime.dialogue.strategy(scope.id,String(query??''),{memory_filter:m=>allowedMemory(m,chatId)&&lifecycle.resolve(m).eligible&&lifecycle.resolve(m).phase!=='trace',source_filter:source=>sourceAllowed(source,chatId)&&lifecycle.sourceFull(source)});

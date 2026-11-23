@@ -16,6 +16,33 @@ const textOf=r=>(r?.content||[]).filter(x=>x.type==='text').map(x=>x.text).join(
 const canonical=v=>Array.isArray(v)?v.map(canonical):v&&typeof v==='object'?Object.fromEntries(Object.keys(v).sort().map(k=>[k,canonical(v[k])])):v;
 const fingerprint=(name,args)=>JSON.stringify([name,canonical(args)]);
 const failureBackoffMs=[5,15,30,60].map(minutes=>minutes*60000);
+const localFaultReason='系统故障与恢复核对仅保留本地记录，不向 QQ 分享';
+const shareTtlMs=30*60000;
+const sharingOffReason='分享关闭期间的生活消息仅保留本地，不补发';
+const isDiagnosticDelivery=o=>!isQuotaDelivery(o)&&(o.localOnly===true||String(o.id||'').startsWith('fault-'));
+const isUnsubmittedShare=o=>!isQuotaDelivery(o)&&!isDiagnosticDelivery(o)&&['pending','deferred','failed'].includes(o.state);
+const validSharingPolicy=p=>p?.version===1&&typeof p.sharing==='boolean';
+const effectiveSharing=(l,settingsSharing)=>Object.hasOwn(l.controls,'sharing')?!!l.controls.sharing:settingsSharing;
+const shareTimeKnown=(o,now)=>Number.isFinite(o.at)&&o.at>0&&o.at<=now;
+function suppressUnsubmitted(o,reason,now){
+  o.suppressedFrom={state:o.state,reason:o.reason||''};o.suppressedAt=now;o.state='suppressed';o.reason=reason;
+}
+function suppressDiagnosticDelivery(o,now){
+  if(!isDiagnosticDelivery(o)||!['pending','deferred','failed'].includes(o.state))return;
+  suppressUnsubmitted(o,localFaultReason,now);
+}
+function reconcileSharingPolicy(l,settingsSharing,now){
+  const initialized=validSharingPolicy(l.sharingPolicy);
+  if(initialized&&typeof l.sharingPolicy.settingsSharing==='boolean'&&l.sharingPolicy.settingsSharing!==settingsSharing)delete l.controls.sharing;
+  const sharing=effectiveSharing(l,settingsSharing),changed=initialized&&l.sharingPolicy.sharing!==sharing;
+  if(!initialized)l.sharingPolicy={version:1,sharing,settingsSharing,initializedAt:now,changedAt:now};
+  else {l.sharingPolicy.settingsSharing=settingsSharing;if(changed){l.sharingPolicy.sharing=sharing;l.sharingPolicy.changedAt=now;}}
+  for(const o of l.outbox){
+    if(!isUnsubmittedShare(o))continue;
+    const reason=!initialized?'启用分享新鲜度保护前的积压仅保留本地，不补发':changed?'分享开关改变前的积压仅保留本地，不补发':!sharing?sharingOffReason:!shareTimeKnown(o,now)?'生活分享的原始时间无法确认，仅保留本地，不补发':now-o.at>=shareTtlMs?'生活分享已超过30分钟，仅保留本地，不补发':'';
+    if(reason)suppressUnsubmitted(o,reason,now);
+  }
+}
 export class LifeEngine {
   constructor({bridge,host,settings=()=>({}),authorized=()=>true,identity=()=>({}),clock=Date.now}){
     Object.assign(this,{bridge,host,settings,authorized,identity,clock});this.closed=false;this.lock=null;this.agent=null;this.deliveryBusy=false;this.alertVisits=new Map();
@@ -26,12 +53,20 @@ export class LifeEngine {
       if(l.round){const reservation=l.scheduler?.reservations?.find(r=>r.roundId===l.round.id);if(reservation)reservation.status='uncertain';l.round.status='uncertain';l.round.stopReason='重启后先确认旧会话停止，再只读核对现场';l.recovery=true;}
       for(const q of l.queue)if(q.status==='running')q.status='uncertain';
       if(l.queue.some(q=>q.status==='uncertain'))l.recovery=true;
-      for(const o of l.outbox)if(o.state==='sending')o.state='uncertain';
+      const recoveryIds=new Set(l.journal.filter(j=>j.type==='round'&&j.kind==='recovery').map(j=>j.id));
+      for(const o of l.outbox){if(recoveryIds.has(o.id))o.localOnly=true;if(o.state==='sending')o.state='uncertain';suppressDiagnosticDelivery(o,this.clock());}
+      reconcileSharingPolicy(l,!!({...defaults,...this.settings()}.sharing),this.clock());
     });
   }
   get l(){return this.bridge.data.life;}
   get cfg(){return {...defaults,...this.settings(),...this.l.controls};}
   change(fn){return this.bridge.change(d=>fn(d.life,d));}
+  syncSharingPolicy(now=this.clock()){
+    const settingsSharing=!!({...defaults,...this.settings()}.sharing),p=this.l.sharingPolicy;
+    const settingsChanged=validSharingPolicy(p)&&typeof p.settingsSharing==='boolean'&&p.settingsSharing!==settingsSharing;
+    const sharing=settingsChanged?settingsSharing:effectiveSharing(this.l,settingsSharing);
+    if(!validSharingPolicy(p)||p.settingsSharing!==settingsSharing||p.sharing!==sharing||this.l.outbox.some(o=>isUnsubmittedShare(o)&&(!sharing||!shareTimeKnown(o,now)||now-o.at>=shareTtlMs)))this.change(l=>reconcileSharingPolicy(l,settingsSharing,now));
+  }
   blocked(reason){if(this.l.blocked!==reason)this.change(l=>{l.blocked=reason;});}
   ownerTurn(text,info){
     const token=info.turnToken;let turnKey=typeof token==='string'||typeof token==='number'?token:undefined;
@@ -46,7 +81,7 @@ export class LifeEngine {
     if(action==='plan'&&(this.l.ownerTasks||[]).some(t=>t.status==='active'&&t.instruction===clean(text)))return;
     const changes={pauseIdle:{idleEnabled:false},pauseAuto:{autonomy:false},pauseShare:{sharing:false},observe:{observeOnly:true},stop:{stopped:true},resume:{stopped:false,autonomy:true,idleEnabled:true,observeOnly:false},share:{sharing:true}};
     if(!changes[action]&&!['plan','probe'].includes(action))throw Error('未知控制');
-    this.change((l,d)=>{Object.assign(l.controls,changes[action]||{});l.revision++;
+    this.change((l,d)=>{reconcileSharingPolicy(l,!!({...defaults,...this.settings()}.sharing),this.clock());Object.assign(l.controls,changes[action]||{});l.revision++;
       if(action==='probe'){if(l.round)throw Error('后台正在忙碌');l.recovery=true;l.verification=true;l.verificationInstruction=clean(text).slice(0,500);l.backoffUntil=0;}
       if(action==='plan'){
         for(const t of l.ownerTasks||[])if(t.status==='active'){t.status='cancelled';t.phase='cancelled';t.revision++;t.history.push({at:this.clock(),kind:'owner-changed-plan',instruction:clean(text)});}
@@ -56,6 +91,7 @@ export class LifeEngine {
         synthetic(d,'owner',clean(text).slice(0,2000),this.clock());
       }
       if(l.round&&['stop','pauseAuto','observe','plan','pauseIdle'].includes(action)){l.round.status='stopping';l.round.stopReason='主人更新了控制或安排';}
+      reconcileSharingPolicy(l,!!({...defaults,...this.settings()}.sharing),this.clock());
     });
     if(this.l.round?.status==='stopping')void this.host.cancel(this.l.round.sessionId).catch(()=>{});
   }
@@ -63,7 +99,7 @@ export class LifeEngine {
     if(key.startsWith('budget-'))return this.noteQuotaAlert(key.slice(7));
     const now=this.clock();this.change(l=>{
       if(now-(l.faults[key]||0)<1800000)return;
-      l.faults[key]=now;l.outbox.push({id:'fault-'+randomUUID(),at:now,importance:'urgent',text:message,state:'pending',facts:[key],owner:l.owner,persona:l.persona});
+      l.faults[key]=now;l.outbox.push({id:'fault-'+randomUUID(),at:now,importance:'urgent',text:message,state:'suppressed',reason:localFaultReason,facts:[key],owner:l.owner,persona:l.persona});
     });
   }
   async tick(){
@@ -72,7 +108,9 @@ export class LifeEngine {
   }
   async tickOnce(){
     if(this.closed||this.bridge.fatal||this.maintenanceBusy)return;
-    const id=this.identity(),l=this.l,c=this.cfg,now=effectiveNow(l,this.clock());
+    const id=this.identity(),l=this.l,now=effectiveNow(l,this.clock());
+    this.syncSharingPolicy(now);
+    const c=this.cfg;
     if(l.owner&&l.owner!==id.owner||l.persona&&l.persona!==id.persona){
       this.blocked('主人或人格已改变，请重新核对身份后恢复');
       if(l.round){this.change(x=>{x.round.status='stopping';});await this.host.cancel(l.round.sessionId);}return;
@@ -274,6 +312,7 @@ export class LifeEngine {
     if(!this.l.round)return;
     const r=this.l.round,valid=completed&&['running','finished'].includes(r.status)&&r.report&&r.observation&&!this.lock,now=this.clock();
     this.change(l=>{
+      reconcileSharingPolicy(l,!!({...defaults,...this.settings()}.sharing),now);
       const report=r.report;
       endOwnerTaskRound(l,r,valid,now);
       for(const e of l.queue)if(r.events.includes(e.id)){
@@ -293,7 +332,11 @@ export class LifeEngine {
         }
         l.nextIdle=Math.max(now+this.cfg.idleMs,timestamp(report.nextAt)||now+this.cfg.idleMs);
         if(r.readOnly){l.recovery=false;l.verification=false;}
-        if(report.share&&['urgent','important'].includes(report.importance))l.outbox.push({id:r.id,at:now,importance:report.importance,text:report.share,facts:report.facts,state:'pending',owner:l.owner,persona:l.persona});
+        const localOnly=r.readOnly||r.kind==='recovery',sharing=l.sharingPolicy.sharing;
+        if(report.share&&(localOnly||!sharing||['urgent','important'].includes(report.importance))){
+          const reason=localOnly?localFaultReason:!sharing?sharingOffReason:'';
+          l.outbox.push({id:r.id,at:now,importance:report.importance,text:report.share,facts:report.facts,state:reason?'suppressed':'pending',owner:l.owner,persona:l.persona,...(localOnly?{localOnly:true}:{}),...(reason?{reason}:{})});
+        }
         l.failureBackoff={streak:0,lastRoundId:r.id,at:now,delayMs:0};l.backoffUntil=0;
       }else {
         const prior=l.failureBackoff?.streak,streak=Math.min(Number.MAX_SAFE_INTEGER,(Number.isSafeInteger(prior)&&prior>0?prior:0)+1);
@@ -318,12 +361,15 @@ export class LifeEngine {
   async deliver(){
     if(this.closed||this.deliveryBusy)return;this.deliveryBusy=true;
     try{
-      const now=this.clock(),c=this.cfg;
-      if(!this.authorized()||c.stopped)return;
-      const o=this.l.outbox.filter(x=>!isQuotaDelivery(x)&&(x.state==='queued'||['pending','deferred','failed'].includes(x.state)&&(!x.retryAt||x.retryAt<=now))).sort((a,b)=>(a.importance==='urgent'?0:1)-(b.importance==='urgent'?0:1)||a.at-b.at)[0];if(!o)return;
+      const now=this.clock();
+      if(!this.authorized()||this.cfg.stopped)return;
+      this.syncSharingPolicy(now);
+      const c=this.cfg;
+      const o=this.l.outbox.filter(x=>!isQuotaDelivery(x)&&!isDiagnosticDelivery(x)&&(x.state==='queued'||['pending','deferred','failed'].includes(x.state)&&(!x.retryAt||x.retryAt<=now))).sort((a,b)=>(a.importance==='urgent'?0:1)-(b.importance==='urgent'?0:1)||a.at-b.at)[0]
+        ||this.l.outbox.find(x=>isDiagnosticDelivery(x)&&x.state==='queued');if(!o)return;
       if(o.owner!==this.identity().owner||o.persona!==this.identity().persona)return;
       if(o.state==='queued'){
-        const r=await this.host.deliveryStatus(o.deliveryId);if(r)this.change(()=>{o.state=this.deliveryState(r);});return;
+        const r=await this.host.deliveryStatus(o.deliveryId);if(r)this.change(l=>{o.state=this.deliveryState(r);suppressDiagnosticDelivery(o,this.clock());if(isUnsubmittedShare(o))suppressUnsubmitted(o,'原分享已提交，仅核对原回执，不重新提交',this.clock());reconcileSharingPolicy(l,!!({...defaults,...this.settings()}.sharing),this.clock());});return;
       }
       const hour=Number(new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Shanghai',hour:'2-digit',hour12:false}).format(now));
       const quiet=c.quietStart>c.quietEnd?hour>=c.quietStart||hour<c.quietEnd:hour>=c.quietStart&&hour<c.quietEnd;

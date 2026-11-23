@@ -3,12 +3,17 @@ import { randomUUID } from 'node:crypto';
 const number=value=>Number.isFinite(value)&&value>=0?value:null;
 const sameRoute=(a,b)=>!!a?.provider&&a.provider===b?.provider&&a.model===b?.model;
 const textBlocks=message=>(message?.content??[]).filter(block=>block.type==='text'&&typeof block.text==='string').map(block=>block.text);
+const inputUsage=usage=>{
+  const fresh=number(usage?.inputTokens),cached=number(usage?.cacheReadTokens??0),written=number(usage?.cacheWriteTokens??0);
+  return fresh!==null&&cached!==null&&written!==null?fresh+cached+written:null;
+};
+const contextMessage=event=>event.type==='assistant/message'||event.type==='tool/result'?event.data?.message:['user/message','system/message','developer/message'].includes(event.type)?event.data?.message??event.data:null;
 
 /** Optional, read-only DSH services. Never rewrite a frozen request or intercept sending. */
 export class HostContextMonitor {
   constructor(api,{active,load,save,valid,onCompletion=()=>{},clock=Date.now}){
     Object.assign(this,{api,active,load,save,valid,onCompletion,clock});
-    this.pending=new Map();this.isolatedSessions=new Map();this.connected=false;this.closed=false;
+    this.pending=new Map();this.isolatedSessions=new Map();this.windowEvidence=new Map();this.connected=false;this.closed=false;
     this.summary={requests:0,completed:0,failed:0,last:null};
   }
   service(name){try{return this.api.dsh?.get?.(name)??this.api.dsh?.[name];}catch{return null;}}
@@ -26,8 +31,39 @@ export class HostContextMonitor {
       }
     }catch{this.connected=false;}
   }
-  stop(){this.closed=true;try{this.off?.();}finally{this.pending.clear();this.isolatedSessions.clear();this.connected=false;}}
+  stop(){this.closed=true;try{this.off?.();}finally{this.pending.clear();this.isolatedSessions.clear();this.windowEvidence.clear();this.connected=false;}}
   status(){return {request_observer:this.connected,session_meter:typeof this.service('tokenMeter')?.measure==='function',...this.summary};}
+  compressedInputEvidence(sessionId,session,selection){
+    try{
+      const config=this.api.config?.(),owner=String(config?.ownerQQ??''),governance=config?.ext?.['history-vault'];
+      if(!owner||config?.enabled===false||config?.modules?.['history-vault']?.enabled===false||governance?.enabled===false||governance?.contextDedupEnabled===false||governance?.contextEngine!=='existing')return null;
+      const origin=new URL(governance.contextCompressionOrigin);
+      if(origin.protocol!=='http:'||!['127.0.0.1','localhost','[::1]'].includes(origin.hostname)||origin.username||origin.password||origin.pathname!=='/'||origin.search||origin.hash)return null;
+      const chat=this.sessionCandidates(sessionId).map(id=>this.api.core?.hub?.chatOfSession?.(id)).find(Boolean);
+      if(chat!=='private:'+owner||this.api.use?.('history-vault')?.preparationPolicyStatus?.()?.connected!==true||typeof session?.snapshotEvents!=='function')return null;
+      const endSeq=session.seq;if(!Number.isSafeInteger(endSeq)||endSeq<0)return null;
+      const id=session.id??sessionId,key=JSON.stringify([endSeq,selection.provider,selection.model]),cached=this.windowEvidence.get(id);
+      let evidence=cached?.key===key?cached.evidence:null;
+      if(cached?.key!==key){
+        // Existing, immutable session events already contain provider usage. No probe or request is made.
+        const events=session.snapshotEvents(Math.max(0,endSeq-256),endSeq),completed=new Set(events.filter(event=>event.type==='turn/end'&&event.data?.reason?.kind==='completed').map(event=>event.data.turn));
+        for(let index=events.length-1;index>=0;index--){
+          const event=events[index],data=event.data;
+          if(event.type!=='assistant/message'||data?.interrupted||!completed.has(data?.turn)||!sameRoute(data.message?.source,selection))continue;
+          const prompt=inputUsage(data.usage);if(prompt===null||!Number.isFinite(event.time))continue;
+          let growth=0,newEvents=0;
+          for(const [offset,later]of events.slice(index).entries()){const message=contextMessage(later);if(message){growth+=Math.ceil(JSON.stringify(message).length/2)+16;if(offset>0)newEvents++;}}
+          evidence={provider:selection.provider,model:selection.model,input_tokens:prompt,context_growth_estimate:growth,new_context_events:newEvents,at:event.time,seq:event.seq,source:'completed_session_provider_usage'};break;
+        }
+        this.windowEvidence.set(id,{key,evidence});while(this.windowEvidence.size>16)this.windowEvidence.delete(this.windowEvidence.keys().next().value);
+      }
+      if(!evidence)return null;
+      const age=this.clock()-evidence.at;
+      // A long idle does not invalidate unchanged context; active evidence is bounded to six hours.
+      const ageAllowed=age>=0&&(age<=6*3600000||evidence.new_context_events===0);
+      return ageAllowed?evidence:null;
+    }catch{return null;}
+  }
   budget({sessionId,content=[],stableCost=0,cap}){
     const fallback={mode:'module_cap_fallback',cap,available:Math.max(0,cap-stableCost),complete_final_window_known:false};
     try{
@@ -43,7 +79,16 @@ export class HostContextMonitor {
       // Later Aurabot additions and the refreshed system prompt are not yet admitted.
       const safetyReserve=Math.max(2048,Math.ceil(context.contextWindow*.05));
       const remaining=Math.max(0,Math.floor(context.contextWindow-occupied-incoming-outputReserve-safetyReserve-stableCost));
-      return {...fallback,mode:'host_meter_estimate',available:Math.min(fallback.available,remaining),context_window:context.contextWindow,occupied_estimate:occupied,incoming_estimate:incoming,output_reserve:outputReserve,safety_reserve:safetyReserve,meter_baseline:measured.baseline?.kind??'estimated'};
+      const sizing={...fallback,mode:'host_meter_estimate',available:Math.min(fallback.available,remaining),context_window:context.contextWindow,occupied_estimate:occupied,incoming_estimate:incoming,output_reserve:outputReserve,safety_reserve:safetyReserve,meter_baseline:measured.baseline?.kind??'estimated'};
+      if(occupied>=context.contextWindow&&measured.baseline?.kind==='estimated'){
+        const evidence=this.compressedInputEvidence(sessionId,session,selection);
+        if(evidence){
+          const effective=evidence.input_tokens+evidence.context_growth_estimate;
+          const bounded=Math.max(0,Math.floor(context.contextWindow-effective-incoming-outputReserve-safetyReserve-stableCost));
+          if(bounded>0)return {...sizing,mode:'verified_compression_supplement',available:Math.min(fallback.available,3072,bounded),effective_input_estimate:effective,compression_evidence:evidence,complete_final_window_known:false};
+        }
+      }
+      return sizing;
     }catch{return fallback;}
   }
   prepare(row,{sessionId,chatId,text}){

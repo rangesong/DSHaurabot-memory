@@ -3,6 +3,7 @@ export const sha256=b=>createHash('sha256').update(b).digest('hex');
 export function applyHunks(bytes,entry){
  if(entry.before===null){if(bytes!==null)throw Error('New file already exists');const out=Buffer.from(entry.content);if(sha256(out)!==entry.after)throw Error('New file hash mismatch');return out;}
  if(!Buffer.isBuffer(bytes)||sha256(bytes)!==entry.before)throw Error('Installed code does not match the verified baseline: '+entry.path);
+ if(entry.before===entry.after&&entry.hunks==='')return bytes;
  const source=bytes.toString('utf8').split('\n'),lines=entry.hunks.split('\n'),out=[];let cursor=0,i=0;
  while(i<lines.length){
   if(!lines[i]){i++;continue;}

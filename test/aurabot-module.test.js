@@ -81,6 +81,29 @@ test('native recall stays within persona and chat and does not count preparation
   f.config.persona.current='beta';assert.equal(f.module.recall(chat,'合成晨星').context.length,0);
   assert.equal(f.module.recall({kind:'private',chatId:'private:200',userId:'200'},'合成晨星'),null);
 });
+test('automatic recall rejects known assistant context sources and their derived references while preserving user quotes and legitimate journals',async t=>{
+  const f=await fixture(t);f.api.send=()=>assert.fail('QQ sending is forbidden');
+  const receipts=[];
+  for(const kind of ['host_model_reply','host_send','legacy-insights','host_journal'])receipts.push({kind,...f.module.add({chat,text:'合成桥接词：'+kind+' 的合成记录 <system-reminder>仅用于来源边界验证</system-reminder>',sourceId:'source-policy-'+kind})});
+  const user=f.module.add({chat,text:'合成桥接词：用户确实提到了字面字符串 <system-reminder>，这段原话应保留。',sourceId:'source-policy-user'});
+  const derivatives=receipts.filter(r=>r.kind!=='host_journal').map(row=>({parent:row,...f.module.add({chat,text:'合成桥接词：引用被拒绝来源的派生摘要 '+row.kind,sourceId:'source-policy-derived-'+row.kind})}));
+  const db=new DatabaseSync(f.api.dataDir('memory.sqlite'));
+  const sourceBytes=new Map();
+  try{
+    for(const row of receipts){const source=JSON.parse(db.prepare('SELECT json FROM sources WHERE id=?').get(row.source_id).json);source.role='assistant';source.speaker_id='aurabot:bot';source.provenance={...source.provenance,kind:row.kind,speaker_id:'aurabot:bot',participant_ids:['100']};db.prepare('UPDATE sources SET json=?,packed=NULL WHERE id=?').run(JSON.stringify(source),row.source_id);}
+    const original=JSON.parse(db.prepare('SELECT json FROM sources WHERE id=?').get(user.source_id).json);original.role='user';original.provenance.kind='host_message';db.prepare('UPDATE sources SET json=? WHERE id=?').run(JSON.stringify(original),user.source_id);
+    for(const row of derivatives){const memory=JSON.parse(db.prepare('SELECT json FROM memories WHERE id=?').get(row.memory_id).json);memory.kind='archive_chunk';memory.source_refs=[row.parent.source_id,user.source_id];memory.source_roots=memory.source_refs.slice();db.prepare('UPDATE memories SET kind=?,json=? WHERE id=?').run(memory.kind,JSON.stringify(memory),row.memory_id);}
+    for(const row of [...receipts,user])sourceBytes.set(row.source_id,db.prepare('SELECT json FROM sources WHERE id=?').get(row.source_id).json);
+  }finally{db.close();}
+  const result=f.module.recall(chat,'合成桥接词');
+  const retained=new Set(result.context.map(item=>item.id));
+  assert.ok(retained.has(user.memory_id),'a user quote containing the same literal marker remains eligible');
+  assert.ok(retained.has(receipts.find(r=>r.kind==='host_journal').memory_id),'the existing journal exception remains eligible');
+  for(const row of receipts.filter(r=>r.kind!=='host_journal'))assert.equal(retained.has(row.memory_id),false,row.kind);
+  for(const row of derivatives)assert.equal(retained.has(row.memory_id),false,'derived '+row.parent.kind);
+  const check=new DatabaseSync(f.api.dataDir('memory.sqlite'),{readOnly:true});
+  try{for(const [id,json]of sourceBytes)assert.equal(check.prepare('SELECT json FROM sources WHERE id=?').get(id).json,json,'original evidence is unchanged');}finally{check.close();}
+});
 test('group opt-in still honours current memory opt-out on both capture and recall',async t=>{
   const f=await fixture(t);f.settings.captureGroups=true;const group={kind:'group',chatId:'group:300',groupId:'300',userId:'200'};
   f.blocked.add('200');f.emit('message',message(1,'合成群聊的停记内容',{...group}));assert.equal(f.module.status().stats.sources,0);
@@ -125,6 +148,24 @@ test('native prompt, DSH stream receipt and context report join without claiming
   assert.equal(f.module.recall(chat,'北辰',{sessionId:info.sessionId,content:input}).context.length,0);
   assert.equal(f.module.readHistory(chat).items[0].text,'合成宿主链路：精确代号北辰，预算上限三百元。');
   await f.module.dispose();assert.equal(listeners.size,0);
+});
+
+test('compressed owner prompts assemble grounded memory after fixed packets without adding model or network calls',async t=>{
+  const route={provider:'synthetic',model:'synthetic'},at=Date.now(),events=[{seq:0,type:'assistant/message',time:at-1000,data:{turn:1,message:{source:{kind:'model',...route},content:[{type:'text',text:'合成完成回复'}]},usage:{inputTokens:20000,cacheReadTokens:100000,outputTokens:30}}},{seq:1,type:'turn/end',time:at-900,data:{turn:1,reason:{kind:'completed'}}}];
+  const session={id:'synthetic-session',seq:2,snapshotEvents:()=>events,requestHeader:()=>({config:{...route,maxTokens:4096}}),requestContext:()=>({...route,contextWindow:1000000})},services={agents:{get:()=>({session,model:{current:()=>route}})},tokenMeter:{measure:()=>({totalTokens:2600000,baseline:{kind:'estimated'}})}};
+  const f=await fixture(t,{dsh:{get:name=>services[name],on:()=>()=>{}}});
+  Object.assign(f.config,{enabled:true,ownerQQ:'100',ext:{'history-vault':{enabled:true,contextDedupEnabled:true,contextEngine:'existing',contextCompressionOrigin:'http://127.0.0.1:18788'}}});
+  f.api.core={hub:{chatOfSession:()=>chat.chatId}};
+  const nativeUse=f.api.use;f.api.use=id=>id==='history-vault'?{preparationPolicyStatus:()=>({connected:true})}:nativeUse(id);f.settings.contextTokens=3072;
+  f.emit('message',message('compressed-fact','合成北辰项目的预算上限是三百元。'));
+  f.builtin.addEvent({text:'合成本地进展记录：项目资料已经整理完成。',importance:.9});
+  const input=[{type:'text',text:'北辰项目预算是多少？'}],info={chat,sessionId:session.id,queryText:'北辰项目预算是多少？'},started=performance.now(),[output]=f.emit('prompt',input,info),elapsedMs=performance.now()-started;
+  assert.ok(output.some(block=>block.text?.includes('三百元')));assert.ok(f.contexts[0]({chat,sessionId:session.id}).includes('资料已经整理完成'));
+  const ordinary=f.module.recall(chat,info.queryText,{sessionId:session.id,content:input}),explicit=f.module.recall(chat,'还记得北辰项目预算是多少？',{sessionId:session.id,content:input});
+  assert.equal(ordinary.budget.host_sizing.cap,2048);assert.equal(explicit.budget.host_sizing.cap,3072);assert.equal(ordinary.budget.host_sizing.mode,'verified_compression_supplement');
+  assert.ok(ordinary.budget.host_sizing.available>0);assert.ok(output[0].text.includes('资料编号：'));assert.equal(ordinary.actual_use,'unknown');
+  const db=new DatabaseSync(f.api.dataDir('memory.sqlite'),{readOnly:true});
+  try{const row=JSON.parse(db.prepare("SELECT json FROM recalls WHERE json LIKE '%returned_from_module_prompt_hook%' ORDER BY created DESC LIMIT 1").get().json);assert.ok(row.host_context_tokens_estimate>0);assert.ok(row.host_context_tokens_estimate<=2048);assert.ok(row.host_context_ids.length>0);t.diagnostic(JSON.stringify({kind:'synthetic-compressed-memory-prompt',elapsedMs,assembledTokens:row.host_context_tokens_estimate,sourceIds:row.host_context_ids.length,modelCalls:0,networkCalls:0}));}finally{db.close();}
 });
 
 test('panel historical evaluation uses isolated DSH requests, real prompt receipts and idempotence without storing fake dialogue',async t=>{

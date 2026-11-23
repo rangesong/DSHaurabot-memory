@@ -13,7 +13,7 @@ export default {
     {key:'mode',label:'运行方式',type:'select',options:[{value:'active',label:'参与记忆与上下文'},{value:'observe',label:'只积累和查看，不注入上下文'}]},
     {key:'captureGroups',label:'记录宿主允许的群聊',type:'switch',hint:'默认只记录主人私聊；群聊始终独立保存。非主人内容需要内置记忆的停记检查可用。'},
     {key:'captureOtherPrivate',label:'记录宿主允许的其他私聊',type:'switch'},
-    {key:'contextTokens',label:'每轮记忆上下文上限',type:'number',min:256,max:8192,step:256,hint:'本模块与可核对的原生查询资料共同装配，参考 DSH 占用预留回答空间；缺少计量时使用此上限。标签和日期也占额度，未带入的原话仍在底座。'},
+    {key:'contextTokens',label:'每轮记忆上下文上限',type:'number',min:256,max:8192,step:256,hint:'建议3072；普通聊天最多2048，明确回忆或查询最多3072，均受本上限约束。固定资料、标签和日期也占额度。已验证压缩路线参考同会话成功请求用量，不以原始历史大小直接清零；最终出站保护不变。未带入的原话仍在底座。'},
     {key:'allowHostModel',label:'允许使用 DSH 模型',type:'switch',hint:'面板明确操作、启用的按需重排和共用每日配额的后台反馈复核会调用宿主模型；不读取或复制模型密钥。'},
   ],
   async setup(api){return startThinkstar(api);},
