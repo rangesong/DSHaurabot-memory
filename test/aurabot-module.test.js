@@ -110,58 +110,6 @@ test('group opt-in still honours current memory opt-out on both capture and reca
   f.blocked.delete('200');f.emit('message',message(2,'合成群聊的独立记忆',{...group}));assert.equal(f.module.status().stats.sources,1);
   f.blocked.add('200');assert.equal(f.module.recall(group,'独立记忆').context.length,0);
 });
-
-test('world background filters learning ancestry and weak protected matches before assembly without changing ordinary recall',async t=>{
-  const f=await fixture(t);f.config.ownerQQ='100';f.api.send=()=>assert.fail('QQ sending is forbidden');
-  const add=(id,text)=>f.module.add({chat,text,sourceId:'world-purpose-'+id});
-  const owner=add('owner','今天别打工了，先休息。');
-  const share=add('share','以后QQ分享只要正常消息。');
-  const weak=add('weak','合成小说笔记：我喜欢小说里的分享桥段和朋友关系。');
-  const learning=add('learning','合成小说练习笔记：鱼的世界今天别打工了，QQ分享只要正常消息。');
-  const derived=add('derived','鱼的世界今天别打工了，合成小说练习的派生笔记。');
-  const transitive=add('transitive','鱼的世界今天别打工了，合成小说练习的二次派生笔记。');
-  const indirect=add('indirect','鱼的世界今天别打工了，引用自主学习的来源记录。');
-  const privateRule=add('private-rule','合成私聊互动规则，用于检测世界召回是否触发全局整理。');
-  const before=new Map(),db=new DatabaseSync(f.api.dataDir('memory.sqlite'));
-  try{
-    for(const row of [owner,share,weak,derived,transitive]){
-      const source=JSON.parse(db.prepare('SELECT json FROM sources WHERE id=?').get(row.source_id).json);source.role='user';source.provenance.kind='host_message';db.prepare('UPDATE sources SET json=?,packed=NULL WHERE id=?').run(JSON.stringify(source),row.source_id);
-    }
-    for(const [row,kind,refs]of [[learning,'self_learning_result',[owner.source_id]],[indirect,'builtin_memory_api',[learning.source_id]]]){
-      const source=JSON.parse(db.prepare('SELECT json FROM sources WHERE id=?').get(row.source_id).json);source.role='document';source.provenance={...source.provenance,kind,source_refs:refs};db.prepare('UPDATE sources SET json=?,packed=NULL WHERE id=?').run(JSON.stringify(source),row.source_id);
-    }
-    for(const [row,basis]of [[derived,learning],[transitive,derived]]){
-      const memory=JSON.parse(db.prepare('SELECT json FROM memories WHERE id=?').get(row.memory_id).json);memory.attributes.basis_refs=[{id:basis.memory_id,revision:1}];db.prepare('UPDATE memories SET json=? WHERE id=?').run(JSON.stringify(memory),row.memory_id);
-    }
-    for(const row of [weak,learning,derived,transitive,indirect]){
-      const memory=JSON.parse(db.prepare('SELECT json FROM memories WHERE id=?').get(row.memory_id).json);memory.protection='P1';db.prepare('UPDATE memories SET json=? WHERE id=?').run(JSON.stringify(memory),row.memory_id);
-    }
-    const rule=JSON.parse(db.prepare('SELECT json FROM memories WHERE id=?').get(privateRule.memory_id).json);rule.kind='pattern';rule.layer='implicit';rule.attributes.central_rule={origin:'feedback_maturation',status:'active',region:'W4',param:'detail_level',value:.25};
-    db.prepare('UPDATE memories SET kind=?,layer=?,json=? WHERE id=?').run(rule.kind,rule.layer,JSON.stringify(rule),rule.id);
-    for(const row of db.prepare('SELECT id,json FROM memories').all())before.set(row.id,row.json);
-  }finally{db.close();}
-  const options={origin:'world-life',availableTokens:600,strategy:{text:'不应进入世界背景的外部互动建议'}};
-  const started=performance.now(),work=f.module.recall(chat,'今天别打工了，先休息',options),sharing=f.module.recall(chat,'关闭QQ分享',options),elapsedMs=performance.now()-started;
-  assert.ok(work.context.some(item=>item.id===owner.memory_id&&item.text.includes('别打工')),'a bare owner arrangement needs no fish-world marker');
-  assert.ok(sharing.context.some(item=>item.id===share.memory_id&&item.text.includes('正常消息')),'sharing preferences remain assembled');
-  for(const result of [work,sharing]){
-    for(const row of [weak,learning,derived,transitive,indirect])assert.equal(result.candidates.some(item=>item.id===row.memory_id),false,row.memory_id+' must be removed before protected candidate reservation');
-    assert.ok(result.budget.used_estimate>0&&result.budget.used_estimate<=600);assert.equal(result.dialogue_strategy,undefined);assert.equal(result.actual_use,'unknown');
-  }
-  t.diagnostic(JSON.stringify({kind:'synthetic-world-purpose-recall',recalls:2,elapsedMs,assembledTokens:[work.budget.used_estimate,sharing.budget.used_estimate],modelCalls:0,qqSends:0}));
-  const check=new DatabaseSync(f.api.dataDir('memory.sqlite'),{readOnly:true});try{for(const [id,json]of before)assert.equal(check.prepare('SELECT json FROM memories WHERE id=?').get(id).json,json,'purpose selection does not rewrite or pause stored learning');}finally{check.close();}
-  for(const origin of ['prompt','tool'])assert.ok(f.module.recall(chat,'合成小说练习笔记',{origin,availableTokens:600}).context.some(item=>item.id===learning.memory_id),'explicit novel recall remains available for '+origin);
-});
-
-test('empty or generic world background makes no recall while task-specific source eligibility preserves privacy',async t=>{
-  const f=await fixture(t);f.emit('message',message('world-work','今天别打工了，先休息。'));
-  for(const query of ['', '鱼的世界生活、朋友、主人约定和分享偏好'])assert.equal(f.module.recall(chat,query,{origin:'world-life',availableTokens:600}),null);
-  const db=new DatabaseSync(f.api.dataDir('memory.sqlite'),{readOnly:true});try{assert.equal(db.prepare('SELECT count(*) n FROM recalls').get().n,0);}finally{db.close();}
-  const group={kind:'group',chatId:'group:300',groupId:'300',userId:'200'};f.settings.captureGroups=true;
-  f.emit('message',message('world-group','今天别打工了，先休息。',group));f.blocked.add('200');
-  assert.equal(f.module.recall(group,'今天别打工了',{origin:'world-life',availableTokens:600}).context.length,0);
-  f.config.persona.current='beta';assert.equal(f.module.recall(chat,'今天别打工了',{origin:'world-life',availableTokens:600}).context.length,0);
-});
 test('prompt excludes known archive message IDs and budgets the serialized evidence',async t=>{
   const f=await fixture(t);f.emit('message',message(1,'项目：合成晨星；预算上限300元'));f.emit('message',message(2,'这轮刚发送的晨星消息'));
   const input=[{type:'text',text:'现在查合成晨星'}],info={chat,sessionId:'synthetic-session',queryText:'合成晨星',archiveMessages:[{id:'qq::2'}],recentMessages:[]};

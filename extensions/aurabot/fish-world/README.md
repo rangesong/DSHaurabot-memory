@@ -30,12 +30,6 @@ costGuardEnabled defaults false (observation only). costSoftLimitCny=2 and costS
 
 ## Schema and deployment
 
-Version 1.3.10 preserves the original window rollover conditions, timing, unknown-delivery guards and task handoff. Existing window keys, history and round counts are retained. Request preparation and tool restrictions use the original mechanism; the complete final request gate remains unchanged.
-
-Version 1.3.9 recalls optional Thinkstar evidence only after successful world-round admission and durable reservation. Preflight includes a fixed 800-token memory slot; the slot never reaches a model or the handoff ledger. A bounded source packet replaces it once per round, or is omitted if the prepared slot or budget is unavailable. Rejected two-second scheduler checks perform no memory recall. Queries use only the current round's associated owner task, plans and events; idle checks without a concrete target and read-only recovery do not use the former generic topic query.
-
-Sharing still requires an actual eligible normal-life result; a completed routine recovery with an empty share is not a QQ message. Original delivery state, receipts, message IDs, daily quotas and window safety guards remain in place. No schema migration or private-ledger rewrite is required.
-
 Version 1.3.8 bounds ordinary owner-private-chat world context to 1000 serialized characters: fresh current status and up to two active owner tasks with their next step and history reference. Completed plans, repeated round summaries and nested journals remain in the ledger and can be read when needed. The owner-private chat receives a read-only local `fish_life_history` tool with 1500-character parts; it cannot open raw host sessions or cross identities. Background world windows retain their existing full task handoff and history tool. This changes no ledger schema or original records and preserves the normal-message-only, live-only QQ sharing policy.
 
 Runtime schema 3 / life schema 2 requires explicit migration. An old ledger opens under a read-only gate: no polling, model, delivery or runtime writes. The gate checks stopped owned agents and no outstanding round/tool/outbound, waits at least 15 seconds of stable old ledger, and emits a fresh writer-quiescence witness. Unresolved execution prevents migration. scripts/migrate-fish-world-ledger.js provides dry run, apply and guarded rollback; see its --help and docs/context-governance.md.
