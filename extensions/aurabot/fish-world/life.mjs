@@ -11,7 +11,7 @@ import {workHoursAllowed} from './work-hours.mjs';
 export const WORLD='mcp__fish-world__';
 export const worldNames=['now','history','find','profile','go','do','say','friends','update','guide'].map(n=>WORLD+'world_'+n);
 export const mutating=(name,args={})=>['go','do','say','update'].some(n=>name===WORLD+'world_'+n)||name===WORLD+'world_friends'&&args.action!=='list';
-const localNames=new Set(['fish_life_intent','fish_life_finish','fish_life_history','fish_life_action','fish_life_task']);
+const localNames=new Set(['fish_life_intent','fish_life_finish','fish_life_history','fish_life_action','fish_life_task','fish_dialogue_history']);
 const textOf=r=>(r?.content||[]).filter(x=>x.type==='text').map(x=>x.text).join('\n');
 const canonical=v=>Array.isArray(v)?v.map(canonical):v&&typeof v==='object'?Object.fromEntries(Object.keys(v).sort().map(k=>[k,canonical(v[k])])):v;
 const fingerprint=(name,args)=>JSON.stringify([name,canonical(args)]);
