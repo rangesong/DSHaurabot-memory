@@ -1,6 +1,7 @@
 import {isExactFishIdentity} from './action-sequence.mjs';
 import {rememberOwnerTurn,taskForExecution,ownerTaskGuard,noteOwnerTaskResult,advanceOwnerTasks,endOwnerTaskRound,worldToolName} from './owner-tasks.mjs';
 import {completedWindowRound,bindWindow,buildTaskPrompt} from './world-window.mjs';
+import {reserveMemoryPrompt,hasMemoryReservation,completeMemoryPrompt,WORLD_MEMORY_AVAILABLE_TOKENS} from './world-memory.mjs';
 import {advancePlans,preparePlanChanges,applyPlanChanges,finishPlanCheck,planEvidenceFingerprint} from './plans.mjs';
 import {candidates,admission,reserveRound,effectiveNow,quotaAlert,closeOldAlerts,isQuotaDelivery,observeSatisfiedEvents,estimateTokens} from './governance.mjs';
 import {beginCostRound,endCostRound,costSummary,settleMissingUsage} from './costs.mjs';
@@ -167,7 +168,7 @@ export class LifeEngine {
       events:group.map(e=>e.id),sourceEventIds:[...new Set([...group.filter(e=>this.l.queue.some(q=>q.id===e.id)).map(e=>e.id),...(chosen.sourceEventIds||[])])],
       planId:chosen.planId||planIds[0]||null,planIds,ownerTaskId:chosen.ownerTaskId||null,planRevision:chosen.planRevision||null,reason:clean(chosen.plan?.goal||chosen.text).slice(0,1000),
       startedAt:decision.now,status:'running',revision:this.l.revision,calls:0,receipts:[],observation:'',intent:null,report:null,readOnly:chosen.kind==='recovery'};
-    const prompt=this.prompt(group,round);
+    const basePrompt=this.prompt(group,round),prompt=typeof this.host.memory==='function'?reserveMemoryPrompt(basePrompt):basePrompt;
     let prepared;
     try{prepared=this.host.prepare?await this.host.prepare(prompt,round):{prompt,estimate:{roundPromptTokens:estimateTokens(prompt),requestTokens:estimateTokens(prompt)+16000,scope:'module-plus-unknown-wrapper-reserve'}};}
     catch(error){this.blocked('启动预检受阻：'+clean(error.message));return;}
@@ -183,7 +184,12 @@ export class LifeEngine {
       const row=l.scheduler.reservations.find(r=>r.roundId===round.id);row.status='submission-uncertain';
     });
     const roundId=round.id;
-    void Promise.resolve().then(()=>this.host.run(prepared.prompt||prompt,prepared)).then(async()=>{
+    void Promise.resolve().then(()=>{
+      if(this.closed||this.l.round?.id!==roundId||this.l.round.status!=='running')return;
+      const finalPrompt=this.admittedPrompt(prepared.prompt??prompt,round);
+      return this.host.run(finalPrompt,{...prepared,prompt:finalPrompt});
+    }).then(async()=>{
+      if(this.closed)return;
       if(this.l.round?.id!==roundId)return;
       if(await this.host.idle(this.l.round.sessionId))this.end(true);else this.change(l=>{if(l.round?.id===roundId)l.round.status='finished';});
     }).catch(()=>{
@@ -200,7 +206,32 @@ export class LifeEngine {
     if(now-old.lastSeenAt>=60000){this.change(l=>{quotaAlert(l,{fishId:this.bridge.data.fishId,bucket,now,repeat:visit.count});});this.alertVisits.delete(old.key);}
   }
 
-  prompt(events,round=this.l.round){return buildTaskPrompt(this,events,round,this.host.memory?.()||'');}
+  prompt(events,round=this.l.round){return buildTaskPrompt(this,events,round);}
+
+  admittedPrompt(prompt,round){
+    if(typeof this.host.memory!=='function')return hasMemoryReservation(prompt)?completeMemoryPrompt(prompt).prompt:prompt;
+    const reservation=this.l.scheduler?.reservations?.find(r=>r.roundId===round?.id);
+    const admitted=!this.closed&&this.l.round?.id===round?.id&&this.l.round.status==='running'&&reservation?.status==='submission-uncertain';
+    let cached=this.worldMemoryCache;
+    if(admitted&&hasMemoryReservation(prompt)&&cached?.roundId!==round.id){
+      // Cache before calling the synchronous host bridge: even a reentrant
+      // preparation of this same admitted round cannot issue a second recall.
+      cached=this.worldMemoryCache={roundId:round.id,text:'',status:'pending'};
+      try{
+        const value=this.host.memory({round,availableTokens:WORLD_MEMORY_AVAILABLE_TOKENS});
+        const checked=completeMemoryPrompt(prompt,value);
+        cached.status=['over-budget','invalid'].includes(checked.status)?checked.status:typeof value==='string'?'ready':'invalid';cached.text=cached.status==='ready'?value:'';
+      }
+      catch{cached.status='error';}
+    }
+    let visible='';try{visible=this.host.memoryVisible?.({round})||'';}catch{}
+    const result=completeMemoryPrompt(prompt,admitted&&cached?.roundId===round.id?cached.text:'',visible);
+    if(admitted){
+      const status=!hasMemoryReservation(prompt)?result.status:['error','invalid','over-budget'].includes(cached?.status)?cached.status:result.status;
+      this.change(l=>{if(l.round?.id===round.id)l.round.memoryStatus={status,reservedTokens:result.reservedTokens,usedTokens:result.usedTokens};});
+    }
+    return result.prompt;
+  }
 
   bind(sessionId,names){
     if(!worldNames.every(n=>names.includes(n)))throw Error('后台实际可见世界工具不完整');
@@ -349,6 +380,8 @@ export class LifeEngine {
       const reservation=l.scheduler?.reservations.find(x=>x.roundId===r.id);if(reservation)reservation.status=valid?'completed':'uncertain';
       l.round=null;
     });
+    if(this.worldMemoryCache?.roundId===r.id)this.worldMemoryCache=null;
+    if(this.worldMemoryVisible?.roundId===r.id)this.worldMemoryVisible=null;
     if(valid&&r.report.importance!=='routine')void this.remember(r.id);
   }
   async remember(id){

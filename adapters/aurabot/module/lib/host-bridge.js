@@ -18,6 +18,7 @@ import { relevantQueryTerms } from '../../../../core/v5-retrieval.js';
 import { observeHostActivity } from './host-activity.js';
 import {reactionMedia} from './reaction-media.js';
 import {hostSelfActions} from './host-self-actions.js';
+import {worldLifePurpose} from './world-life-purpose.js';
 
 const MODULE=manifest.id,BASE='/aurabot/api/ext/'+MODULE+'/atlas';
 const INSTANCES=Symbol.for('thinkstar.aurabot.instances.v1');
@@ -225,14 +226,20 @@ export async function startThinkstar(api){
     const chatId=cleanId(chat?.chatId);
     if(!allowedChat(chatId))return null;
     const scope=runtime.addScope(context(chatId)),lifecycle=runtime.groupLifecycle(),onDemand=origin==='tool';
+    const purpose=origin==='world-life'?worldLifePurpose(query,{getSource:id=>runtime.store.getSource(id),getMemory:id=>runtime.store.getMemory(id)}):null;
+    if(purpose&&!purpose.active)return null;
+    const memoryFilter=m=>allowedMemory(m,chatId)&&(!purpose||purpose.memory(m));
     const knownIds=new Set(recentMessages.map(m=>hostMessageId(m.id)).filter(Boolean));
     const host_message_ids=runtime.store.state(scope.id).source_refs.filter(id=>knownIds.has(hostMessageId(runtime.store.getSource(id)?.provenance.host_message_id)));
     const configured=contextLimit(sessionId,query,origin);
     const stableCost=Math.ceil(contextFor(chat,{sessionId}).length/2);
     const sizing=Number.isFinite(availableTokens)?{mode:'caller_allocation',available:Math.min(Math.max(0,configured-stableCost),Math.max(0,availableTokens)),complete_final_window_known:false}:hostContext.budget({sessionId,content,stableCost,cap:configured});
-    strategy??=runtime.dialogue.strategy(scope.id,String(query??''),{memory_filter:m=>allowedMemory(m,chatId)&&lifecycle.resolve(m).eligible&&lifecycle.resolve(m).phase!=='trace',source_filter:source=>sourceAllowed(source,chatId)&&lifecycle.sourceFull(source)});
+    // World background does not consume dialogue advice. Its purpose filter must
+    // not be used to reconcile (and potentially pause) ordinary chat learning.
+    if(purpose)strategy={text:''};
+    strategy??=runtime.dialogue.strategy(scope.id,String(query??''),{memory_filter:m=>memoryFilter(m)&&lifecycle.resolve(m).eligible&&lifecycle.resolve(m).phase!=='trace',source_filter:source=>sourceAllowed(source,chatId)&&lifecycle.sourceFull(source)});
     const strategyCost=Math.ceil((strategy.text?.length??0)/2);
-    const result=runtime.query({scope:scope.id,query:String(query??'').slice(0,2000),actual_tokens:Math.max(0,sizing.available-strategyCost),host_message_ids,use:false,semantic_ids,rerank_ids,template:'aurabot_host_context',on_demand:onDemand,memory_filter:m=>allowedMemory(m,chatId)});
+    const result=runtime.query({scope:scope.id,query:String(query??'').slice(0,2000),actual_tokens:Math.max(0,sizing.available-strategyCost),host_message_ids,use:false,semantic_ids,rerank_ids,template:'aurabot_host_context',on_demand:onDemand,memory_filter:memoryFilter});
     if(strategy.text&&strategyCost<=sizing.available)result.dialogue_strategy=strategy;
     // A module allocation is known; the host's COMPLETE remaining window is usually not exposed.
     result.budget.actual_model_window_known=false;result.budget.host_sizing=sizing;
