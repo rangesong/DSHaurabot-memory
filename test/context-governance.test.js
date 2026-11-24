@@ -1,8 +1,10 @@
 import {extractRuntime} from './helpers/extract-host-runtime.js';
 import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';import path from 'node:path';import {pathToFileURL} from 'node:url';
-import {LifeEngine} from '../extensions/aurabot/fish-world/life.mjs';
+import {LifeEngine,worldNames} from '../extensions/aurabot/fish-world/life.mjs';
 import {newLife} from '../extensions/aurabot/fish-world/state.mjs';
-import {chooseWindow,windowOwns,windowPrompt,carryForward,completedWindowRound} from '../extensions/aurabot/fish-world/world-window.mjs';
+import {chooseWindow,windowOwns,windowPrompt,carryForward,completedWindowRound,safeBoundary} from '../extensions/aurabot/fish-world/world-window.mjs';
+import {prepareRequest} from '../extensions/aurabot/fish-world/host-runtime.mjs';
+import {admission,estimateTokens} from '../extensions/aurabot/fish-world/governance.mjs';
 import {planContextGovernance,installMemoContextDedup} from '../extensions/aurabot/history-vault/context-dedup.mjs';
 const now=1795132800000;
 function engine(settings={}){const data={fishId:'fixture-fish',at:{state:now,now},now:'现场原文',state:{where:{kind:'place',id:'fixture-home'},figure:{asleep:false}},life:newLife(now)};const bridge={data,change(fn){const old=structuredClone(data);try{return fn(data);}catch(e){Object.assign(data,old);throw e;}}};return new LifeEngine({bridge,clock:()=>now,settings:()=>({backgroundContextEnabled:true,...settings}),host:{remember:async()=>null,cancel:async()=>{},idle:async()=>true},identity:()=>({owner:'10001',persona:'fixture'})});}
@@ -15,11 +17,39 @@ test('world window counts completed life rounds, never calls, retries or duplica
  assert.equal(windowOwns(e.l,base,k),false);assert.equal(windowOwns(e.l,base,next),true);assert.equal(windowOwns(e.l,base,'cw:forged'),false);
 });
 test('in-flight, unresolved, recovery and delivery block rollover without resetting ledgers',()=>{
- for(const type of ['lock','deliveryBusy','externalPending','recovery','uncertain-event','executing','sending','queued','uncertain-share']){
+ for(const type of ['lock','deliveryBusy','externalPending','recovery','uncertain-event','executing','sending','queued']){
   const e=engine();chooseWindow(e,'fixture');e.l.contextWindow.completed=16;e.l.days['fixture']={spend:88,calls:22};const before=JSON.stringify(e.l.days),key=e.l.contextWindow.key;
-  if(type==='lock')e.lock={callId:'old-call'};if(type==='deliveryBusy')e.deliveryBusy=true;if(type==='externalPending')e.l.externalPending={callId:'old-call'};if(type==='recovery')e.l.recovery=true;if(type==='uncertain-event')e.l.queue.push({id:'old-event',status:'uncertain'});if(type==='executing')e.l.journal.push({id:'old-call',status:'executing'});if(['sending','queued','uncertain-share'].includes(type))e.l.outbox.push({id:'same-delivery',state:type==='uncertain-share'?'uncertain':type});
+  if(type==='lock')e.lock={callId:'old-call'};if(type==='deliveryBusy')e.deliveryBusy=true;if(type==='externalPending')e.l.externalPending={callId:'old-call'};if(type==='recovery')e.l.recovery=true;if(type==='uncertain-event')e.l.queue.push({id:'old-event',status:'uncertain'});if(type==='executing')e.l.journal.push({id:'old-call',status:'executing'});if(['sending','queued'].includes(type))e.l.outbox.push({id:'same-delivery',state:type});
   assert.equal(chooseWindow(e,'fixture'),key,type);assert.equal(JSON.stringify(e.l.days),before,type);
  }
+});
+
+test('a static uncertain share permits bounded forced rollover without changing or resending its evidence',async t=>{
+ const e=engine(),base='fixture-stalled-share',oldKey=chooseWindow(e,base,{nonce:()=> 'old-window'});e.bind('session-old-world',worldNames);
+ Object.assign(e.l,{owner:'10001',persona:'fixture'});e.l.contextWindow.completed=1;
+ e.l.outbox.push({id:'old-partial-share',at:now-3*86400000,state:'uncertain',importance:'important',text:'合成旧生活分享',owner:'10001',persona:'fixture',attempts:1,receipt:'partial-receipt',receipts:['partial-receipt'],deliveryId:'original-delivery',facts:['old-tool-receipt'],reason:'合成部分投递，保留原回执'});
+ e.l.journal.push({id:'old-tool-receipt',tool:'mcp__fish-world__world_history',status:'confirmed',args:'{"fish":"#321"}',result:'合成历史回执完整原文',sessionId:'session-old-world'});
+ e.l.days['fixture-day']={work:2,idle:3,social:4,share:1,spend:17,calls:9};
+ const preserved=()=>structuredClone({outbox:e.l.outbox,journal:e.l.journal,days:e.l.days,plans:e.l.plans,queue:e.l.queue,ownerInstructions:e.l.ownerInstructions,sessionId:e.l.sessionId});
+ const before=preserved(),oldWindows=structuredClone(e.l.contextWindow.windows),epoch=e.l.contextWindow.epoch;
+ assert.equal(safeBoundary(e),true);assert.equal(chooseWindow(e,base),oldKey,'a static share does not itself request a rollover');
+ const round={id:'new-round-fixture',events:[],planIds:[],kind:'idle',readOnly:false},prompt=e.prompt([],round);
+ const messages=[{role:'user',content:[{type:'text',text:'h'.repeat(94000)}]}],schemas=[{name:'synthetic-world-schema',description:'schema'.repeat(2600)}];
+ const visibleTokens=estimateTokens(messages),oldRequestTokens=estimateTokens(prompt)+visibleTokens+estimateTokens(schemas)+16000;
+ assert.ok(visibleTokens<e.cfg.visibleContextEstimatedTokenLimit);assert.ok(oldRequestTokens>e.cfg.requestAdmissionEstimatedTokenLimit,'the complete old request, rather than the round counter, forces rotation');
+ assert.ok(oldRequestTokens>70000&&oldRequestTokens<85000,'synthetic old request reproduces the approximately 75k stall');
+ const old={session:{id:'session-old-world',deriveMessages:()=>messages}},folder=fs.mkdtempSync(path.join(process.env.THINKSTAR_TEST_TMP,'uncertain-share-window-'));
+ const restoreWorldScope=agent=>{assert.equal(agent,old);assert.equal(agent.session.id,e.l.sessionId);assert.ok(e.l.contextWindow.windows.some(window=>window.sessionId===agent.session.id));return [...worldNames];};
+ const prepared=await prepareRequest(e,{dataDir:(...parts)=>path.join(folder,...parts),dsh:{get:name=>name==='tools'?{schemas:()=>schemas}:null}},{scope:()=>base,findAgent:()=>old,identity:()=>({owner:'10001',persona:'fixture'}),restoreWorldScope},prompt,round);
+ assert.notEqual(prepared.windowKey,oldKey);assert.equal(e.l.contextWindow.epoch,epoch+1);assert.equal(e.l.contextWindow.completed,0);
+ assert.deepEqual(e.l.contextWindow.windows.slice(0,-1),oldWindows);assert.equal(e.l.contextWindow.windows.at(-1).sessionId,null);
+ assert.equal(prepared.estimate.visibleContextTokens,0);assert.ok(prepared.estimate.requestTokens<e.cfg.requestAdmissionEstimatedTokenLimit);
+ assert.equal(admission(e.l,{id:'synthetic-idle',kind:'idle',bucket:'idle',priority:4},e.cfg,{now,estimate:prepared.estimate}).allowed,true);
+ assert.deepEqual(preserved(),before,'rotation changes only its context-window state');
+ assert.equal(chooseWindow(e,base,{force:true}),prepared.windowKey,'an unbound new window is reused rather than repeatedly rotated');
+ let sends=0,statusQueries=0;e.host.send=async()=>{sends++;assert.fail('An uncertain delivery must never be resent');};e.host.deliveryStatus=async()=>{statusQueries++;assert.fail('Static uncertain delivery does not poll an old receipt');};
+ await e.deliver();await e.deliver();assert.equal(sends,0);assert.equal(statusQueries,0);assert.deepEqual(preserved(),before);
+ t.diagnostic(JSON.stringify({kind:'synthetic-static-share-window-rollover',oldRequestTokens,newRequestTokens:prepared.estimate.requestTokens,oldVisibleTokens:visibleTokens,newVisibleTokens:prepared.estimate.visibleContextTokens,retainedPartialReceipts:e.l.outbox[0].receipts.length,modelCalls:0,qqSends:sends}));
 });
 test('disabled world optimization continues current safe window and failed rounds do not count',()=>{
  const e=engine(),key=chooseWindow(e,'fixture');e.l.contextWindow.completed=16;assert.equal(chooseWindow(e,'fixture',{enabled:false}),key);
@@ -95,7 +125,7 @@ test('partial compaction containing only a state marker never suppresses complet
 test('full fish module loader admits only current owned route and exposes bounded source retrieval',async()=>{
  const {createHash}=await import('node:crypto'),{default:module}=await import('../extensions/aurabot/fish-world/index.mjs');
  const folder=fs.mkdtempSync(path.join(process.env.THINKSTAR_TEST_TMP,'world-loader-')),id={owner:'10001',persona:'fixture'},base=createHash('sha256').update(JSON.stringify(['fixture-fish',id])).digest('hex').slice(0,24),e=engine();
- const route=chooseWindow(e,base);e.l.round={id:'fixture-round',sessionId:'fixture-session',status:'running',events:[],startedAt:Date.now(),receipts:[]};
+ Object.assign(e.l,{owner:id.owner,persona:id.persona});const route=chooseWindow(e,base);e.l.round={id:'fixture-round',sessionId:'fixture-session',status:'running',events:[],startedAt:Date.now(),receipts:[]};
  fs.writeFileSync(path.join(folder,'runtime.json'),JSON.stringify({version:3,keyId:'',fishId:'fixture-fish',cursor:'',recent:[],skipped:0,state:{stage:'alive',fish:'fixture-fish'},now:'fixture',at:{state:Date.now()},errors:{},life:e.l}));
  const builders=[],disposers=[],agent={cancel(){},whenIdle:async()=>{},session:{id:'fixture-session'},ctx:{tools:{restrict:()=>()=>{}}},status:'idle'},queried=[],names=['now','history','find','profile','go','do','say','friends','update','guide'].map(n=>'mcp__fish-world__world_'+n);
  const cfg={enabled:true,ownerQQ:id.owner,persona:{current:id.persona}},api={settings:()=>({backgroundContextEnabled:true,backgroundContextRounds:16}),config:()=>cfg,dataDir:(...parts)=>path.join(folder,...parts),log:{warn(){},info(){}},dsh:{get:n=>n==='tools'?{guard:()=>()=>{},schemas:()=>names.map(name=>({name}))}:n==='agents'?{get:()=>agent,list:()=>[agent]}:n==='sessionQuery'?{readEvent:async args=>{queried.push(args);return {events:[]};}}:null,on:()=>()=>{}},core:{hub:{chatOfSession:()=> 'system:ext-fish-world:'+route,turnSendersAllOwner:()=>true},http:{body:async r=>r.body}},use:()=>null,think:async()=>{throw Error('No model calls in loader test');},on(){},context(){},tool:fn=>builders.push(fn),rule(){},command(){},route(){},every(){},later(){},onDispose:fn=>disposers.push(fn),defineTool:v=>v};

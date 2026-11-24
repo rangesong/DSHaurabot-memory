@@ -6,7 +6,7 @@ import {planOpen,dayKey} from './state.mjs';
 import {estimateTokens} from './governance.mjs';
 const hash=v=>createHash('sha256').update(typeof v==='string'?v:JSON.stringify(v)).digest('hex');
 const open=s=>!['completed','expired','cancelled','observed','abandoned'].includes(s);
-export function safeBoundary(engine){const l=engine.l;return !engine.lock&&!engine.deliveryBusy&&!l.externalPending&&!l.recovery&&!l.queue.some(q=>q.status==='uncertain')&&!l.journal.some(j=>j.status==='executing')&&!l.outbox.some(o=>['sending','queued','uncertain'].includes(o.state));}
+export function safeBoundary(engine){const l=engine.l;return !engine.lock&&!engine.deliveryBusy&&!l.externalPending&&!l.recovery&&!l.queue.some(q=>q.status==='uncertain')&&!l.journal.some(j=>j.status==='executing')&&!l.outbox.some(o=>['sending','queued'].includes(o.state));}
 export function completedWindowRound(l,round){const w=l.contextWindow;if(w&&w.lastCompletedRound!==round.id){w.completed++;w.lastCompletedRound=round.id;}}
 export function chooseWindow(engine,base,{enabled=true,rounds=16,nonce=randomUUID,now=Date.now(),force=false,recoveryStopped=false}={}){
  const l=engine.l;let chosen;

@@ -46,8 +46,14 @@ export function installUsage(api,getEngine){
  },'世界自有窗口用量只读补账');
  return ()=>{for(const off of offs.reverse())off?.();};
 }
-export async function prepareRequest(engine,api,{scope,findAgent,identity},prompt,round){
- const old=findAgent(engine.l.sessionId),messages=old?.session?.deriveMessages?.()||[];
+export async function prepareRequest(engine,api,{scope,findAgent,identity,restoreWorldScope},prompt,round){
+ const old=findAgent(engine.l.sessionId);
+ if(old){
+  if(typeof restoreWorldScope!=='function')throw Error('世界启动预检缺少已归属会话的工具作用域恢复');
+  const restored=restoreWorldScope(old);
+  if(!Array.isArray(restored)||typeof restored.then==='function')throw Error('世界工具作用域必须同步恢复并返回真实工具名');
+ }
+ const messages=old?.session?.deriveMessages?.()||[];
  const visible=messages.flatMap(m=>m.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('\n'),visibleTokens=estimateTokens(messages);
  let measured;try{measured=api.dsh.get('tokenMeter')?.measure?.(old?.session);}catch{}
  const schemas=old?api.dsh.get('tools')?.schemas?.(old)||[]:[],toolsTokens=estimateTokens(schemas),wrapperReserve=16000;
