@@ -29,6 +29,40 @@ test('stale missing and future world observations do not become present location
   assert.equal(parse(chatWorldContext({...data,at:{state:now-180000}},{},{now})).current.fresh,true);
 });
 
+test('the real named activity schema retains original clock strings and companions beside its observation time',()=>{
+  const doing={name:'吃白米饭',since:'11:55',until:'12:10',with:['合成同伴甲','合成同伴乙']};
+  const input={...data,state:{...state,doing}},before=structuredClone(input),result=chatWorldContext(input,{}, {now}),packet=parse(result);
+  assert.deepEqual(packet.current.doing,doing);assert.equal(packet.current.observedAt,new Date(now).toISOString());
+  assert.match(result,/主人较新事实/);assert.match(result,/until不证明已完成/);assert.deepEqual(input,before);
+  const full={...doing,since:'2026-11-23T11:55:00+08:00',until:'2026-11-23T12:10:00+08:00'};
+  assert.deepEqual(parse(chatWorldContext({...data,state:{...state,doing:full}},{},{now})).current.doing,full);
+  assert.equal(parse(chatWorldContext({...data,state:{...state,doing:'一起吃饭🐟'}},{},{now})).current.doing,'一起吃饭🐟');
+});
+
+test('a fresh explicit null means no main activity without claiming parallel activities or all tasks have ended',()=>{
+  const result=chatWorldContext({...data,state:{...state,doing:null,side:[{name:'并行合成煮饭',until:'12:20'}]}},{ownerTasks:[task('still-active')]},{now}),packet=parse(result);
+  assert.equal(Object.hasOwn(packet.current,'doing'),true);assert.equal(packet.current.doing,null);
+  assert.match(result,/仅表示无当前主活动/);assert.match(result,/未展示的并行活动查完整状态/);
+  assert.equal(packet.ownerTasks[0].id,'still-active');assert.ok(!result.includes('并行合成煮饭'));
+});
+
+test('legacy text and string activities remain visible while missing or malformed values never become idle',()=>{
+  for(const doing of ['合成散步',{text:'合成散步'}])assert.equal(parse(chatWorldContext({...data,state:{...state,doing}},{},{now})).current.doing,'合成散步');
+  for(const doing of [undefined,false,[],{},0,{name:''}])assert.equal(Object.hasOwn(parse(chatWorldContext({...data,state:{...state,doing}},{},{now})).current,'doing'),false);
+  const overdue={name:'吃白米饭',since:'11:00',until:'11:10',with:[]};
+  assert.deepEqual(parse(chatWorldContext({...data,state:{...state,doing:overdue}},{},{now})).current.doing,overdue,'the projector cannot infer completion from an elapsed clock string');
+});
+
+test('named and explicitly absent activities follow the original location switch and freshness gate',()=>{
+  for(const doing of [{name:'吃白米饭',since:'11:55',until:'12:10',with:[]},null]){
+    const input={...data,state:{...state,doing}};
+    assert.equal(Object.hasOwn(parse(chatWorldContext(input,{}, {location:false,now})).current,'doing'),false);
+    assert.equal(Object.hasOwn(parse(chatWorldContext({...input,at:{state:now-180001}},{},{now})).current,'doing'),false);
+    assert.equal(Object.hasOwn(parse(chatWorldContext({...input,at:{state:now+1}},{},{now})).current,'doing'),false);
+    assert.deepEqual(parse(chatWorldContext(input,{}, {body:false,now})).current.doing,doing);
+  }
+});
+
 test('existing body and location switches independently hide their state fields without exposing a full now line',()=>{
   const noBody=parse(chatWorldContext(data,{}, {body:false,now}));assert.equal(noBody.current.body,undefined);assert.equal(noBody.current.outfit,undefined);assert.equal(noBody.current.where,'合成公园');
   const noLocation=parse(chatWorldContext(data,{}, {location:false,now}));assert.equal(noLocation.current.where,undefined);assert.equal(noLocation.current.doing,undefined);assert.equal(noLocation.current.weather,undefined);assert.equal(noLocation.current.outfit.name,'合成棉服');
@@ -50,6 +84,21 @@ test('JSON escaping and control characters cannot make the ordinary packet excee
   const hostile='\u0001"\\'.repeat(2000),oddState={time:hostile,stage:hostile,body:{text:hostile},where:{text:hostile},doing:{text:hostile},weather:{sky:hostile,temp:13},outfit:{name:hostile,look:hostile}};
   const result=chatWorldContext({...data,state:oddState},{ownerTasks:[task('a'.repeat(120),{instruction:hostile,nextStep:hostile}),task('b'.repeat(120),{instruction:hostile,nextStep:hostile})]},{now});
   assert.ok(result.length<=1000);assert.doesNotThrow(()=>parse(result));assert.ok(!result.includes('\\u0001'));
+  const full={...oddState,doing:{name:hostile,since:hostile,until:hostile,with:[hostile,hostile,hostile],privateDetail:'不要完整注入'}};
+  const named=chatWorldContext({...data,state:full},{ownerTasks:[task('a'.repeat(120),{instruction:hostile,nextStep:hostile}),task('b'.repeat(120),{instruction:hostile,nextStep:hostile})]},{now});
+  assert.ok(named.length<=1000);assert.doesNotThrow(()=>parse(named));assert.equal(parse(named).current.doing.with.length,2);assert.ok(!named.includes('不要完整注入'));
+});
+
+test('all named activity and state fields can be entirely JSON escapes without exceeding the serialized cap',()=>{
+  for(const character of ['"','\\','\ud800','\udfff','🐟'])for(const includeTasks of [false,true]){
+    const hostile=character.repeat(2000),full={time:hostile,stage:hostile,body:{text:hostile},outfit:{name:hostile,look:hostile},where:{text:hostile},weather:{sky:hostile,temp:13},doing:{name:hostile,since:hostile,until:hostile,with:[hostile,hostile]}};
+    const life={ownerTasks:includeTasks?[task('a'.repeat(120),{instruction:hostile,nextStep:hostile}),task('b'.repeat(120),{instruction:hostile,nextStep:hostile})]:[]};
+    const result=chatWorldContext({...data,state:full},life,{now}),packet=parse(result);
+    assert.ok(result.length<=1000,JSON.stringify({character,includeTasks,length:result.length}));
+    assert.equal(packet.current.fresh,true);assert.equal(packet.current.observedAt,new Date(now).toISOString());
+    assert.ok(packet.current.doing.name);assert.equal(packet.current.doing.with.length,2);assert.match(result,/仅表示无当前主活动/);
+    for(const field of [packet.current.time,packet.current.stage,packet.current.body,packet.current.outfit.name,packet.current.outfit.look,packet.current.where,packet.current.weather.sky,...Object.values(packet.current.doing).flat()])assert.equal(field.isWellFormed(),true);
+  }
 });
 
 test('ordinary owner has a scoped read-only ledger tool with bounded pagination while foreign chats and raw sessions stay excluded',async t=>{
