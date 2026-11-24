@@ -77,8 +77,10 @@ test('completed recovery and read-only round shares stay local through finish en
   const f=fixture();
   for(const [index,config]of [{kind:'recovery',readOnly:true},{kind:'recovery',readOnly:false},{kind:'inspection',readOnly:true},{kind:'recovery',readOnly:true,importance:'routine'},{kind:'idle',readOnly:false}].entries()){
     const id='completed-round-'+index,receipt='observation-'+index;
-    f.engine.l.round={id,status:'running',...config,events:[],planIds:[],startedAt:now,bucket:'idle',observation:'合成成功现场',receipts:[{id:receipt,tool:'mcp__fish-world__world_now',text:'合成成功现场',isError:false}]};
-    f.engine.finish({events:[],planChanges:[],importance:config.importance||'important',summary:'合成本地总结 '+index,facts:[receipt],share:'合成分享原文 '+index});
+    const eventId='notification-'+index,events=index===4?[eventId]:[];
+    if(index===4)f.engine.l.queue.push({id:eventId,kind:'done',t:now,text:'合成生活事项完成',status:'running',lastRoundId:id,provenance:{trusted:true,source:'world-notify'}});
+    f.engine.l.round={id,sessionId:'synthetic-session-'+index,status:'running',...config,events,planIds:[],startedAt:now,bucket:'idle',observation:'合成成功现场',receipts:[{id:receipt,tool:'mcp__fish-world__world_now',text:'合成成功现场',isError:false}]};
+    f.engine.finish({events:events.map(id=>({id,status:'completed'})),planChanges:[],importance:config.importance||'important',summary:'合成本地总结 '+index,facts:[receipt],share:'合成分享原文 '+index});
     f.engine.end(true);await f.engine.deliver();
     const o=f.engine.l.outbox.find(row=>row.id===id);
     assert.equal(o.text,'合成分享原文 '+index);assert.deepEqual(o.facts,[receipt]);

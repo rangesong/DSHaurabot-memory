@@ -21,9 +21,10 @@ function fixture({outbox=[],initialized=true,sharing=true}={}){
   return {get engine(){return engine;},data,host,sent,queried,settings,time(value){now=value;data.at.state=value;},reload(){data.life=JSON.parse(JSON.stringify(data.life));load();}};
 }
 function complete(f,id,importance='important'){
-  const receipt='evidence-'+id;
-  f.engine.l.round={id,status:'running',kind:'idle',readOnly:false,events:[],planIds:[],startedAt:f.data.at.state,bucket:'idle',observation:'合成成功现场',receipts:[{id:receipt,tool:'mcp__fish-world__world_now',text:'合成成功现场',isError:false}]};
-  f.engine.finish({events:[],planChanges:[],importance,summary:'合成本地总结 '+id,facts:[receipt],share:'合成生活原文 '+id});
+  const receipt='evidence-'+id,eventId='notification-'+id,now=f.data.at.state;
+  f.engine.l.queue.push({id:eventId,kind:'done',t:now,text:'合成生活事项完成',status:'running',lastRoundId:id,provenance:{trusted:true,source:'world-notify'}});
+  f.engine.l.round={id,sessionId:'synthetic-session-'+id,status:'running',kind:'idle',readOnly:false,events:[eventId],planIds:[],startedAt:now,bucket:'idle',observation:'合成成功现场',receipts:[{id:receipt,tool:'mcp__fish-world__world_now',text:'合成成功现场',isError:false}]};
+  f.engine.finish({events:[{id:eventId,status:'completed'}],planChanges:[],importance,summary:'合成本地总结 '+id,facts:[receipt],share:'合成生活原文 '+id});
   f.engine.end(true);
   return f.engine.l.outbox.find(o=>o.id===id);
 }

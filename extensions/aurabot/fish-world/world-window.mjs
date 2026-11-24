@@ -62,6 +62,7 @@ export function buildTaskPrompt(engine,events,round,memory=''){
   'fish_life_finish 使用 planChanges 增量操作 create/update/complete/expire/abandon/block/supersede/merge；更新须已有 id、expectedRevision。新计划业务身份 topic/subject/stage/businessAt/windowStart/windowEnd 清晰。同一事项沿用程序稳定 id。换说法或增加条件使用 refinesPlanId 或 update，保留原条件；不是新建事项。新社交回合的相关计划已在快照中。替代和归并给 targetId/targetExpectedRevision。完成/到期必须真实证据 evidenceIds；历史 needs_review 不擅自激活。旧 plans 格式可兼容，但不重复发送完整计划簿。',
   '本轮每个真实事件 id 必须在 events 指定 completed/expired/blocked；计划 id 交给 planChanges，也兼容 events 中明确处置。未确认结果不可重做，恢复轮只读。工作标记完成需要 world_do 成功回执，已过期任务记 expired，不探索或打断班次。社交先按需 world_history 核对原话。',
   '事实使用本轮成功工具回执 id 或完整工具名；计划、成功、失败、未知分别说明。重要结果才分享，沿用现有人格说话，1到3句话，routine不发；不得声称QQ已经发送，生活分享不讲内部设置或校验。QQ 只分享正常生活消息；系统故障、超时、通道异常和恢复核对只记录在 summary 或本地状态，不写入 share，没有正常生活结果时 share 留空。',
+  'facts 可包含本轮全部查证，历史查询只用于 summary，不是新生活事件。share 只描述本轮真实新行动或新收到的可信原通知，不重复分享查到的旧事。shareFacts 单独填写所选精确成功回执 ID：新行动填本轮实际成功变更回执；新通知填本轮 world_now 回执并用 shareEventIds 明确选择本轮 events 中已完成处理的原通知 ID。shareFacts 若省略则沿用 facts，包含历史查询就只保留本地；多个通知必须明确选择，通知原始时间超过30分钟不主动分享。没有新证据时 share 留空；程序未准入也正常结束本轮，不重新调用、不向 QQ 播报检索或去重状态。',
   round?.readOnly?'本轮是只读恢复窗口。不得重做未知变更；用 fish_life_history 按引用核对旧回执，结合现场确认。':'',
   memory].filter(Boolean).join('\n\n');
 }
