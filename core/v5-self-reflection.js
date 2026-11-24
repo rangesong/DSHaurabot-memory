@@ -1,5 +1,15 @@
 import {digest} from './v5-store.js';
+import {readingReceipt} from './v5-reading-evidence.js';
 const text=(s,n=600)=>String(s??'').trim().slice(0,n);
+function historicalReadReceipt(receipt){
+  if(!receipt||typeof receipt!=='object'||typeof receipt.observation!=='string')return null;
+  const raw=receipt.observation.trim();let value;try{value=JSON.parse(raw);}catch{}
+  // Historical labels are changed only for explicit acknowledgements, failures or empty output.
+  // Unknown payload shapes stay untouched even if the current reader would reject them.
+  const failure=value?.ok===false||value?.read_evidence===false||/^(?:✗|×|Error\b|没成功|未读取到正文|未读到|未完成)/i.test(raw);
+  if(raw&&!/^(?:✓|✔|ok|success|完成)[.!。]?$/i.test(raw)&&!failure)return null;
+  try{const result=readingReceipt({content:[{type:'text',text:raw}]});return ['failed','no_evidence'].includes(result.status)?result:null;}catch{return null;}
+}
 export function previousChinaDay(now){return new Date(now+8*3600000-86400000).toISOString().slice(0,10);}
 export function selfReflectionWindow(now,config={}){
   const date=new Date(now+8*3600000),base=Date.UTC(date.getUTCFullYear(),date.getUTCMonth(),date.getUTCDate())-8*3600000;
@@ -13,6 +23,40 @@ export class V5SelfReflection{
   get(id){const x=this.r.store.sql('SELECT json FROM self_reflections WHERE id=?').get(id);return x?JSON.parse(x.json):null;}
   dailyReady(scope,day=previousChinaDay(this.r.clock())){const item=this.r.archive.index({scope}).days.find(item=>item.day===day);return !!item&&['complete','empty'].includes(item.status);}
   save(row){this.r.store.sql('INSERT INTO self_reflections VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET json=excluded.json').run(row.id,row.scope,row.day,row.created_at,JSON.stringify(row));}
+  reviewReadEvidence({limit=100}={}){
+    const summary={status:'reviewed',scanned:0,updated_rows:0,updated_actions:0,conflicts:0,has_more:false,items:[]};
+    if(this.busy)return {...summary,status:'deferred'};
+    const count=Number.isFinite(Number(limit))?Math.min(1000,Math.max(1,Math.trunc(Number(limit)))):100;
+    const rows=this.r.store.sql(`SELECT s.id,s.json FROM self_reflections s WHERE json_extract(s.json,'$.status') IN ('completed','review_required')
+      AND EXISTS (SELECT 1 FROM json_each(s.json,'$.actions') a WHERE CASE WHEN a.type='object' THEN json_extract(a.value,'$.type')='read' AND json_extract(a.value,'$.status')='completed' ELSE 0 END)
+      ORDER BY s.created DESC,s.id LIMIT ?`).all(count+1);
+    summary.has_more=rows.length>count;const plans=[];
+    for(const stored of rows.slice(0,count)){
+      summary.scanned++;const row=JSON.parse(stored.json),changed=[];
+      if(!Array.isArray(row.actions)||row.actions.length>3)continue;
+      for(const action of row.actions){
+        if(action?.type!=='read'||action.status!=='completed'||typeof action.id!=='string'||!action.id||Object.hasOwn(action,'evidence_review')||!Array.isArray(action.tool_receipts)||!action.tool_receipts.length||action.tool_receipts.length>6)continue;
+        const receipts=action.tool_receipts.map(historicalReadReceipt);
+        if(receipts.some(result=>!result))continue;
+        action.evidence_review={kind:'historical-read-evidence-review',version:1,reviewed_at:this.r.clock(),previous_status:action.status,previous_parent_status:row.status,
+          reason:'历史工具回执只有确认、业务失败或空结果，缺少可用阅读证据；原始内容与来源均保留。',
+          receipt_statuses:receipts.map((result,index)=>({index,previous_status:action.tool_receipts[index].status??null,status:result.status}))};
+        action.status='no_evidence';changed.push(action.id);
+      }
+      if(changed.length){row.status='review_required';plans.push({id:stored.id,before:stored.json,row,actions:changed});}
+    }
+    if(!plans.length)return summary;
+    return this.r.store.tx(()=>{
+      for(const plan of plans){
+        const result=this.r.store.sql('UPDATE self_reflections SET json=? WHERE id=? AND json=?').run(JSON.stringify(plan.row),plan.id,plan.before);
+        if(!result.changes){summary.conflicts++;continue;}
+        this.r.dialogue.activity({id:'self-reading-review:'+plan.id,scope:plan.row.scope,category:'learning',title:'复核历史自主阅读的完成凭据',status:'review_required',source_refs:plan.row.source_refs??[],
+          detail:{reflection_id:plan.id,action_ids:plan.actions,preserved_originals:true,classification_version:1}});
+        summary.updated_rows++;summary.updated_actions+=plan.actions.length;summary.items.push({id:plan.id,action_ids:plan.actions});
+      }
+      return summary;
+    });
+  }
   schedule(scope,day=previousChinaDay(this.r.clock())){
     this.r.requireScope(scope);const now=this.r.clock(),config=this.r.config.W5,window=selfReflectionWindow(now,config),limit=Math.max(1,Math.min(12,Math.trunc(config.self_rounds_per_night??5))),interval=Math.max(5,Number(config.self_round_interval_minutes??20))*60000;
     const rows=this.r.store.sql('SELECT json FROM self_reflections WHERE scope=? AND day=? ORDER BY created').all(scope,day).map(x=>JSON.parse(x.json)),last=rows.at(-1),resume=last?.status==='paused'&&last.questions.length&&last.actions.some(a=>a.status==='pending');

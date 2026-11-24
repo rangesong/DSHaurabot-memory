@@ -48,3 +48,21 @@ test('native cleanup refuses recovery metadata tampering even when original tree
   meta.unowned='keep this data';fs.writeFileSync(file,JSON.stringify(meta));assert.throws(()=>cleanupNativeChatBackup({root:f.root,receipt:r,hostValidated:true}),/metadata changed/);assert.ok(fs.existsSync(file));
  }
 });
+
+test('reviewed background code destinations share verified restoration and install the helper before its importers',async()=>{
+ const f=fixture('native-background');
+ const targets=['src/autotelic/runtime.js','src/autotelic/reflect.js','src/core/backup.js','src/core/backup-push.js','src/host.js'];
+ for(const name of targets){const file=path.join(f.host,name);fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,'export const before = true;\n');}
+ const transforms=targets.map(name=>({area:'host',path:name,transform:()=>"import './"+(name==='src/host.js'?'core/':'')+(name.startsWith('src/autotelic')?'../core/':'')+"backup-zip64.js';\nexport const after = true;\n"}));
+ transforms.push({area:'host',path:'src/core/backup-zip64.js',transform:()=> 'export const helper = true;\n'});
+ const result=await updateNativeChat({...f,transforms,apply:true,client:client()});
+ assert.equal(result.changes.length,6);assert.equal(result.public_download_verified,true);assert.equal(result.code_restoration_verified,true);
+ for(const name of targets)assert.match(fs.readFileSync(path.join(f.host,name),'utf8'),/after = true/);
+ assert.ok(fs.existsSync(path.join(f.host,'src/core/backup-zip64.js')));
+});
+
+test('host becomes busy during recovery verification so native update leaves installed code intact',async()=>{
+ const f=fixture('native-runtime-busy');
+ await assert.rejects(updateNativeChat({...f,apply:true,client:client(),validateHost:async()=>{throw Error('synthetic host busy');}}),/host busy/);
+ assert.match(fs.readFileSync(path.join(f.host,'src/chat/hub.js'),'utf8'),/value = 1/);
+});

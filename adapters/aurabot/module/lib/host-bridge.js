@@ -18,6 +18,7 @@ import { relevantQueryTerms } from '../../../../core/v5-retrieval.js';
 import { observeHostActivity } from './host-activity.js';
 import {reactionMedia} from './reaction-media.js';
 import {hostSelfActions} from './host-self-actions.js';
+import {hostSelfReadTools} from './host-self-reading.js';
 
 const MODULE=manifest.id,BASE='/aurabot/api/ext/'+MODULE+'/atlas';
 const INSTANCES=Symbol.for('thinkstar.aurabot.instances.v1');
@@ -32,7 +33,7 @@ export async function startThinkstar(api){
   const file=resolve(api.dataDir('memory.sqlite'));
   const registry=globalThis[INSTANCES]??=new Map();
   if(registry.has(file))await registry.get(file).dispose();
-  let active=true,closing=null,lastTick=0,lastMaintenance=0,lastError=null;
+  let active=true,closing=null,lastTick=0,lastMaintenance=0,lastError=null,readingReview=null;
   const pending=new Set(),recentSenders=new Map(),ingressPersonas=new Map(),messageObservations=new Map();
   const settings=()=>api.settings();
   const available=()=>active&&settings().masterEnabled!==false&&!api.config().debug;
@@ -291,6 +292,7 @@ export async function startThinkstar(api){
     if(!groupPolicy)promptCache.set(key,{at:Date.now(),task});while(promptCache.size>32)promptCache.delete(promptCache.keys().next().value);return task;
   }
   function tick(){
+    selfActions.refresh();
     if(!available())return {processed:0};
     const now=Date.now(),busy=runtime.store.queuePending()>runtime.config.W5.backlog_threshold;
     if(now-lastTick>=runtime.config.W5.background_interval_ms*(busy?1.5:1)){lastTick=now;runtime.processJobs();}
@@ -309,7 +311,7 @@ export async function startThinkstar(api){
     const check=rows=>Array.isArray(rows)&&rows.length===2&&!rows.some(row=>row.id==='thinkstar-probe-expired')&&rows.some(row=>row.id==='thinkstar-probe-protected')&&rows.some(row=>row.id==='thinkstar-probe-private');
     return {ok:check(own)&&check(native)&&check(vault),thinkstar:check(own),native_memory:check(native),history_vault:check(vault),coverage:runtime.externalGroupCoverage(),synthetic_only:true,model_calls:0,qq_sends:0,memory_records_written:0};
   }
-  function status(){if(!active)return {ok:false,module:MODULE,state:'stopped'};return {ok:true,module:MODULE,version:manifest.version,mode:settings().mode,master_enabled:settings().masterEnabled!==false,night_reflection_enabled:settings().nightReflectionEnabled===true&&settings().mode==='active',stats:runtime.store.stats(),archive:runtime.archive.stats(),native_preparation:{policy:nativePolicy.status(),coverage:runtime.externalGroupCoverage()},compatibility:compat.status(),integration,host_context:hostContext.status(),last_error:lastError,model:client.status(),model_asset_installed:existsSync(api.dataDir('assets','blue-maid-starry.glb')),atlas_url:BASE+'/',builtin_memory_running:api.has('memory')};}
+  function status(){if(!active)return {ok:false,module:MODULE,state:'stopped'};return {ok:true,module:MODULE,version:manifest.version,mode:settings().mode,master_enabled:settings().masterEnabled!==false,night_reflection_enabled:settings().nightReflectionEnabled===true&&settings().mode==='active',reading_evidence_review:readingReview,stats:runtime.store.stats(),archive:runtime.archive.stats(),native_preparation:{policy:nativePolicy.status(),coverage:runtime.externalGroupCoverage()},compatibility:compat.status(),integration,host_context:hostContext.status(),last_error:lastError,model:client.status(),model_asset_installed:existsSync(api.dataDir('assets','blue-maid-starry.glb')),atlas_url:BASE+'/',builtin_memory_running:api.has('memory')};}
   const evaluationService=new HostEvaluation(api,{runtime,monitor:hostContext,prompt,contextFor,allowedChat,sourceAllowed,signal:client.abort.signal,captureSnapshot:(name,args,text)=>coordinator.observe(name,args,text),
     productionObservation:()=>({mode:settings().mode,since:coordinationSince,prepared:runtime.store.sql("SELECT count(*) n,sum(CASE WHEN created>=? THEN 1 ELSE 0 END) recent FROM recalls WHERE json_extract(json,'$.evaluation.id') IS NULL AND json_extract(json,'$.request_inclusion') IN ('returned_from_module_prompt_hook','observed_at_dsh_llm_boundary')").get(coordinationSince),receipts:runtime.store.sql("SELECT count(*) n FROM recalls r,json_each(r.json,'$.host_receipts') h WHERE json_extract(r.json,'$.evaluation.id') IS NULL AND coalesce(json_extract(h.value,'$.isolated_evaluation'),0)!=1").get().n,actual_use:'not_independently_observable'}),
     loadRecall:id=>{const row=runtime.store.sql('SELECT json FROM recalls WHERE id=?').get(id);return row?JSON.parse(row.json):null;},latestRecall:scope=>runtime.store.recalls(scope,1)[0]});
@@ -341,6 +343,7 @@ export async function startThinkstar(api){
   };
   registry.set(file,exports);
   try{
+    if(available()&&settings().mode==='active')try{const review=runtime.selfReflection.reviewReadEvidence({limit:100});readingReview={status:review.status,scanned:review.scanned,updated_rows:review.updated_rows,updated_actions:review.updated_actions,has_more:review.has_more};}catch(error){noteError(error);}
     api.onDispose(()=>exports.dispose());
     hostContext.start();
     stopActivity=observeHostActivity(api,{runtime,active:()=>available(),allowedChat,persona});
@@ -349,7 +352,7 @@ export async function startThinkstar(api){
     api.context?.(({chat,sessionId})=>contextFor(chat,{sessionId}));compat.refresh();
     api.every(1000,()=>{try{tick();}catch(error){noteError(error);}},'Thinkstar 交接与分层治理');
     api.tool(({chat})=>{
-      if(chat?.kind==='system'&&String(chat.chatId).startsWith('system:ext-'+MODULE+':')&&available()&&settings().nightReflectionEnabled===true&&settings().mode==='active')return [api.defineTool({name:'thinkstar_read_video',description:'只读查看B站视频的简介、字幕与热评。',properties:{link:{type:'string'}},required:['link'],execute:async({link})=>{if(!available()||settings().nightReflectionEnabled!==true)fail('自主学习已暂停');const bili=api.use('bili');if(api.config().bili?.enabled===false||typeof bili?.watch!=='function')fail('B站阅读接口不可用');return bili.watch(String(link).slice(0,600));}}),api.defineTool({name:'thinkstar_read_tieba',description:'只读查找或阅读贴吧资料。',properties:{query:{type:'string'},url:{type:'string'}},execute:async({query,url})=>{if(!available()||settings().nightReflectionEnabled!==true)fail('自主学习已暂停');const tieba=api.use('tieba-reader');if(!tieba)fail('贴吧阅读接口不可用');return url?tieba.read(String(url).slice(0,600)):tieba.search(String(query).slice(0,180));}})];
+      if(chat?.kind==='system'&&String(chat.chatId).startsWith('system:ext-'+MODULE+':')&&available()&&settings().nightReflectionEnabled===true&&settings().mode==='active')return hostSelfReadTools(api,{active:selfActions.reading,signal:selfActions.signal,rememberSource:selfActions.rememberSource,knowsSource:selfActions.knowsSource});
       if(!available()||settings().mode!=='active'||!allowedChat(cleanId(chat?.chatId)))return [];
       const boundPersona=persona(),guard=fn=>async args=>{if(!active||settings().mode!=='active'||persona()!==boundPersona)return {ok:false,message:'模块或人格已改变，请刷新聊天工具。'};return fn(args);};
       return [

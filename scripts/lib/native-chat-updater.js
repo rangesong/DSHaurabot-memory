@@ -48,13 +48,13 @@ function replacementHunk(before,after){
  const old=before.toString('utf8').split('\n'),next=after.toString('utf8').split('\n');
  return `@@ -1,${old.length} +1,${next.length} @@\n`+old.map(line=>'-'+line).concat(next.map(line=>'+'+line)).join('\n')+'\n';
 }
-export async function updateNativeChat({root,host,data,transforms,apply=false,client}){
+export async function updateNativeChat({root,host,data,transforms,apply=false,client,validateHost}){
  const snapshot=nativeChatSnapshot({host,data}),entries=new Map(snapshot.entries),changes=[];
  need(Array.isArray(transforms)&&transforms.length>0,'Reviewed native transforms required');
  const seen=new Set();
  for(const change of transforms){
   const key=change.area+'/'+change.path;
-  need(['host/src/chat/hub.js','modules/memory/index.mjs','modules/memory/context-review.js'].includes(key)&&!seen.has(key),'Unreviewed or duplicate native repair target');seen.add(key);
+  need(['host/src/chat/hub.js','modules/memory/index.mjs','modules/memory/context-review.js','host/src/autotelic/runtime.js','host/src/autotelic/reflect.js','host/src/core/backup.js','host/src/core/backup-push.js','host/src/core/backup-zip64.js','host/src/host.js'].includes(key)&&!seen.has(key),'Unreviewed or duplicate native repair target');seen.add(key);
   const before=entries.get(key),next=change.transform(before?.toString('utf8')??null,{version:snapshot.version});
   need(typeof next==='string'&&next.length>0,'Native transform produced no code');
   const syntax=spawnSync(process.execPath,['--check','--input-type=module'],{input:next,encoding:'utf8',windowsHide:true});
@@ -68,7 +68,7 @@ export async function updateNativeChat({root,host,data,transforms,apply=false,cl
   return {area,path:file,before,after,...(!old?{content:next.toString('utf8')}:{hunks:before===after?'':replacementHunk(old,next)})};
  })};
  const fingerprint=entries=>sha256(JSON.stringify([...entries].map(([name,value])=>({name,sha256:sha256(value)})).sort((a,b)=>a.name.localeCompare(b.name,'en'))));
- const initialTree=fingerprint(snapshot.entries),beforeCommit=()=>need(fingerprint(nativeChatSnapshot({host:snapshot.host,data:snapshot.data}).entries)===initialTree,'Native program file set changed during recovery verification');
+ const initialTree=fingerprint(snapshot.entries),beforeCommit=async()=>{await validateHost?.();need(fingerprint(nativeChatSnapshot({host:snapshot.host,data:snapshot.data}).entries)===initialTree,'Native program file set changed during recovery verification');};
  const receipt=await updateWorkHours({root,host:snapshot.host,modules:snapshot.modules,manifest,apply,client,archiveLabel:'native-chat',beforeCommit});
  const metadataHashes=apply?{backup_manifest_sha256:sha256(fs.readFileSync(checkedPath(root,path.join(receipt.backup,'backup-manifest.json')))),backup_receipt_sha256:sha256(fs.readFileSync(checkedPath(root,path.join(receipt.backup,'receipt.json'))))}:{};
  return {...receipt,...metadataHashes,version:snapshot.version,changes,archivedProgramFiles:snapshot.entries.size,archivedProgramBytes:snapshot.bytes,restart_required:apply};

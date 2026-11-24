@@ -52,3 +52,75 @@ test('same-query proposals are recorded as skipped rather than read repeatedly',
 test('a task crossing 05:00 loses permission for subsequent tools and cannot store a completed reading',async t=>{
  const f=fixture(t);f.setTime(at('04:59'));const result=await f.r.selfReflection.run({...f.options,execute:async(_action,opts)=>{f.setTime(at('05:00'));assert.equal(opts.active(),false);return {status:'completed',observation:'not accepted after deadline',tool_receipts:[]};}});assert.equal(result.status,'paused');const row=f.r.selfReflection.list({scope:f.scope}).items[0];assert.equal(row.status,'paused');assert.equal(row.finished_at,at('05:00'));assert.equal(row.actions[0].memory_id,undefined);
 });
+
+function historicalReading(f,id,{observation='✓',receipts,type='read',status='completed',extra={}}={}){
+ return {id,type,status,title:'合成历史阅读 '+id,query:'恒星形成 科普',reason:'保留原始行动理由',observation:'保留原始模型总结',source_ids:[f.source.source_id],tool_receipts:receipts??[{tool:'web',status:'result_observed',observation}],...extra};
+}
+function historicalRound(f,id,actions,{status='completed',created=at('01:00')}={}){
+ const row={id,scope:f.scope,day:'2026-11-16',created_at:created,finished_at:created+1000,status,round:1,source_refs:[f.source.source_id],
+   questions:[{question:'合成原始问题',answer:'保留原始回答',source_ids:[f.source.source_id]}],lessons:[{text:'保留原始暂定认识',status:'tentative_self_reflection'}],actions};
+ f.r.selfReflection.save(row);return row;
+}
+const durableOriginals=r=>({sources:r.store.sql('SELECT id,json,packed FROM sources ORDER BY id').all(),memories:r.store.sql('SELECT id,json FROM memories ORDER BY id').all(),versions:r.store.sql('SELECT id,revision,json FROM versions ORDER BY id,revision').all()});
+const changeCount=r=>Number(r.store.sql('SELECT total_changes() n').get().n);
+
+test('historical read review changes only completion labels and preserves questions, text, sources and memories',t=>{
+ const f=fixture(t),learned=f.r.ingest({scope:f.scope,role:'document',text:'合成历史学习文档：原先的观察和总结必须完整保留。',provenance:{kind:'self_learning_result'},process:true});
+ const bad=historicalReading(f,'old-read',{extra:{source_id:learned.source_id,memory_id:learned.memory_id}}),good=historicalReading(f,'real-read',{observation:'星云中的气体在引力作用下逐渐聚集形成恒星。'});
+ const original=historicalRound(f,'history-mixed',[bad,good]),before=durableOriginals(f.r);
+ const result=f.r.selfReflection.reviewReadEvidence();assert.equal(result.updated_rows,1);assert.equal(result.updated_actions,1);assert.equal(result.conflicts,0);
+ const row=f.r.selfReflection.get(original.id),action=row.actions[0];assert.equal(row.status,'review_required');assert.equal(action.status,'no_evidence');
+ assert.equal(action.evidence_review.previous_status,'completed');assert.equal(action.evidence_review.previous_parent_status,'completed');assert.match(action.evidence_review.reason,/原始内容与来源均保留/);
+ const {status,evidence_review,...preserved}=action,{status:oldStatus,...expected}=bad;assert.deepEqual(preserved,expected);
+ assert.deepEqual(row.actions[1],good);assert.deepEqual(row.questions,original.questions);assert.deepEqual(row.lessons,original.lessons);assert.deepEqual(row.source_refs,original.source_refs);
+ assert.deepEqual(durableOriginals(f.r),before);assert.equal(f.r.dialogue.list({scope:f.scope,category:'learning'}).items.filter(item=>item.id==='self-reading-review:'+original.id).length,1);
+ const changes=changeCount(f.r);assert.equal(f.r.selfReflection.reviewReadEvidence().updated_rows,0);assert.equal(changeCount(f.r),changes,'repeated review does not write even an audit');
+});
+
+test('historical read review recognizes only explicit empty, acknowledgement and business-failure receipts',t=>{
+ const f=fixture(t),known=['',' \n ','✓','✔。','OK!','success','完成。','✗ 当前资料不可用','× 未读到','Error: synthetic failure','没成功：合成失败','未读取到正文','未读到公开资料','未完成本次阅读','{"ok":false,"message":"合成业务失败"}','{"read_evidence":false,"text":"只有占位"}'];
+ for(const [index,observation] of known.entries())historicalRound(f,'known-'+index,[historicalReading(f,'action-'+index,{observation})],{created:at('01:00')+index});
+ const result=f.r.selfReflection.reviewReadEvidence();assert.equal(result.updated_rows,known.length);
+ for(let index=0;index<known.length;index++)assert.equal(f.r.selfReflection.get('known-'+index).actions[0].status,'no_evidence');
+});
+
+test('historical read review preserves normal reads, unknown payloads, practice, missing receipts and pending work',t=>{
+ const f=fixture(t),samples=[
+   historicalReading(f,'normal',{observation:'已取得可用的公开来源正文以及明确的研究结论。'}),
+   historicalReading(f,'unknown-json',{observation:'{"ok":true}'}),
+   historicalReading(f,'unknown-text',{observation:'legacy opaque output'}),
+   historicalReading(f,'practice',{type:'practice'}),historicalReading(f,'note',{type:'note'}),
+   historicalReading(f,'empty-receipts',{receipts:[]}),historicalReading(f,'missing-observation',{receipts:[{tool:'web',status:'result_observed'}]}),
+   historicalReading(f,'failed',{status:'failed'}),
+   historicalReading(f,'mixed-receipts',{receipts:[{tool:'web',status:'result_observed',observation:'✓'},{tool:'fetch',status:'result_observed',observation:'已读到恒星形成机制的公开来源全文。'}]}),
+   historicalReading(f,'previous-review',{extra:{evidence_review:{version:99,reason:'保留未知版本审核'}}}),
+ ];
+ for(const action of samples)historicalRound(f,'preserve-'+action.id,[action]);
+ const noReceipts=historicalReading(f,'no-receipts');delete noReceipts.tool_receipts;historicalRound(f,'preserve-no-receipts',[noReceipts]);
+ const noId=historicalReading(f,'missing-id');delete noId.id;historicalRound(f,'preserve-missing-id',[noId]);historicalRound(f,'preserve-unknown-action',['opaque legacy action']);
+ historicalRound(f,'preserve-paused',[historicalReading(f,'done-in-paused'),historicalReading(f,'pending',{status:'pending'})],{status:'paused'});
+ const before=f.r.store.sql('SELECT id,json FROM self_reflections ORDER BY id').all(),changes=changeCount(f.r);
+ assert.equal(f.r.selfReflection.reviewReadEvidence().updated_rows,0);assert.equal(changeCount(f.r),changes);assert.deepEqual(f.r.store.sql('SELECT id,json FROM self_reflections ORDER BY id').all(),before);
+});
+
+test('historical read review is bounded, retains prior review-required status and defers while busy',t=>{
+ const f=fixture(t);historicalRound(f,'older',[historicalReading(f,'older-action')],{created:at('01:00'),status:'review_required'});historicalRound(f,'newer',[historicalReading(f,'newer-action')],{created:at('01:01')});
+ f.r.selfReflection.busy=true;const before=changeCount(f.r);assert.equal(f.r.selfReflection.reviewReadEvidence().status,'deferred');assert.equal(changeCount(f.r),before);f.r.selfReflection.busy=false;
+ const first=f.r.selfReflection.reviewReadEvidence({limit:1});assert.equal(first.scanned,1);assert.equal(first.updated_rows,1);assert.equal(first.has_more,true);assert.equal(f.r.selfReflection.get('older').actions[0].status,'completed');
+ const second=f.r.selfReflection.reviewReadEvidence({limit:1});assert.equal(second.updated_rows,1);assert.equal(second.has_more,false);assert.equal(f.r.selfReflection.get('older').actions[0].evidence_review.previous_parent_status,'review_required');
+});
+
+test('historical read review CAS preserves a parallel edit and emits no false repair audit',t=>{
+ const f=fixture(t),original=historicalRound(f,'cas-conflict',[historicalReading(f,'cas-action')]),tx=f.r.store.tx.bind(f.r.store);let injected=false;
+ f.r.store.tx=callback=>{if(!injected){injected=true;f.r.selfReflection.save({...original,parallel_edit:'保留并行更新'});}return tx(callback);};
+ const result=f.r.selfReflection.reviewReadEvidence();assert.equal(result.updated_rows,0);assert.equal(result.conflicts,1);
+ const row=f.r.selfReflection.get(original.id);assert.equal(row.parallel_edit,'保留并行更新');assert.equal(row.actions[0].status,'completed');assert.equal(row.actions[0].evidence_review,undefined);
+ assert.equal(f.r.dialogue.list({scope:f.scope,category:'learning'}).items.filter(item=>item.id==='self-reading-review:'+original.id).length,0);
+});
+
+test('historical read label changes and their audit roll back together on storage failure',t=>{
+ const f=fixture(t),original=historicalRound(f,'rollback-review',[historicalReading(f,'rollback-action')]),activity=f.r.dialogue.activity.bind(f.r.dialogue);
+ f.r.dialogue.activity=()=>{throw Error('synthetic audit write failure');};
+ assert.throws(()=>f.r.selfReflection.reviewReadEvidence(),/synthetic audit/);f.r.dialogue.activity=activity;
+ assert.deepEqual(f.r.selfReflection.get(original.id),original);assert.equal(f.r.selfReflection.reviewReadEvidence().updated_rows,1);
+});
