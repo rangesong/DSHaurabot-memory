@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 
 export const BACKUP_CAPACITY_MARKER = 'thinkstar-backup-capacity-v1';
+// Exact previously deployed helper accepted for a reviewed forward replacement.
+export const BACKUP_CAPACITY_PREVIOUS_HELPER_SHA256 = '353cc053366a91dbb9ecad8f8e97ca408a94eae4ca7b70674446f0d31c9483c7';
 export const BACKUP_CAPACITY_BASELINES = Object.freeze({
   'src/core/backup.js': '4552424eefd9af29c9d843c282239b6027e0eb82ad4b1a73493eace3044ec3d5',
   'src/core/backup-push.js': 'd8de12ae9e30f612d8df0bf5822ddc020fd70454662e2ad95d313fb2050696ab',
@@ -8,10 +10,16 @@ export const BACKUP_CAPACITY_BASELINES = Object.freeze({
 });
 // Only these exact outputs qualify as already applied. Filled from the audited
 // baseline transformation, not from a marker substring in arbitrary source.
-const patchedHashes = Object.freeze({
+const previousHashes = Object.freeze({
   'src/core/backup.js': '8756f2d02d6fcb205f2d9ff3b653042fd2b263f14c8344264616288c56fe20e8',
   'src/core/backup-push.js': '3bda4ef4ef14b2ac493e4cd756d8cfcf25ef6fbc5a38fd8af99eec6eee808a05',
   'src/host.js': '2527d749c2febbb088e04d289af0db277e4995a42d7c9713adecd846494e4fbe',
+});
+const patchedHashes = Object.freeze({
+  'src/core/backup.js': '8f7f0dccc4a7b0e04278d2438a5e8e1985dfa92a520f7fd6a734f24a1c57fe51',
+  'src/core/backup-push.js': '556194ae25b03de74f7c26cb42dc928aec29f7f520c523198354ac2200dff287',
+  // The host's streaming entry points do not contain capacity limits.
+  'src/host.js': previousHashes['src/host.js'],
 });
 const hash = value => createHash('sha256').update(value).digest('hex');
 function replaceOnce(source, before, after) {
@@ -136,13 +144,31 @@ function patchHost(source) {
   return result;
 }
 
+function forwardCapacity(source, file) {
+  // Keep the existing marker: only exact reviewed v1 hashes reach this point.
+  if (file === 'src/core/backup.js') {
+    let result = replaceOnce(source,
+      'const MAX_ZIP = 9 * 1024 ** 3 // ZIP64 container cap; expanded data remains capped at 8 GiB',
+      'const MAX_ZIP = 18 * 1024 ** 3 // ZIP64 container cap; expanded data remains capped at 16 GiB');
+    return replaceOnce(result, 'const MAX_EXPANDED = 8 * 1024 ** 3', 'const MAX_EXPANDED = 16 * 1024 ** 3');
+  }
+  if (file === 'src/core/backup-push.js') {
+    if (source.split('9 * 1024 ** 3').length !== 4) throw Error('Backup capacity forward context mismatch');
+    return source.replaceAll('9 * 1024 ** 3', '18 * 1024 ** 3');
+  }
+  return source;
+}
+
 export function patchBackupCapacity(source, { file = 'src/core/backup.js', version = '1.3.0-beta.1' } = {}) {
   source = Buffer.isBuffer(source) ? source.toString('utf8') : source;
   if (typeof source !== 'string' || version !== '1.3.0-beta.1' || !Object.hasOwn(BACKUP_CAPACITY_BASELINES, file)) throw Error('Unsupported backup patch baseline');
   const before = hash(source);
   if (patchedHashes[file] === before) return { source, changed: false, file, before, after: before, marker: BACKUP_CAPACITY_MARKER };
-  if (before !== BACKUP_CAPACITY_BASELINES[file]) throw Error('Backup code differs from the verified baseline: ' + file);
   const transform = file === 'src/core/backup.js' ? patchBackup : file === 'src/core/backup-push.js' ? patchPush : patchHost;
-  const output = '// ' + BACKUP_CAPACITY_MARKER + '\n' + transform(source);
+  let output;
+  if (before === previousHashes[file]) output = forwardCapacity(source, file);
+  else if (before === BACKUP_CAPACITY_BASELINES[file]) output = forwardCapacity('// ' + BACKUP_CAPACITY_MARKER + '\n' + transform(source), file);
+  else throw Error('Backup code differs from the verified baseline: ' + file);
+  if (hash(output) !== patchedHashes[file]) throw Error('Backup patched output differs from the reviewed result: ' + file);
   return { source: output, changed: true, file, before, after: hash(output), marker: BACKUP_CAPACITY_MARKER };
 }

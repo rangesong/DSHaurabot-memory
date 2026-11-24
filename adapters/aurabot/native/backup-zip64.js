@@ -154,11 +154,12 @@ export async function splitBackupFile(source, destination, name, partSize, { ope
   const written = []
   try {
     const before = await file.stat({ bigint: true })
-    if (!before.isFile() || before.size <= 0n || before.size > 9n * 1024n ** 3n) throw new Error('备份文件大小无效')
+    if (!before.isFile() || before.size <= 0n || before.size > 18n * 1024n ** 3n) throw new Error('备份文件大小无效')
     const size = Number(before.size)
+    const partWidth = Math.max(2, String(Math.ceil(size / partSize)).length)
     const block = Buffer.allocUnsafe(Math.min(1024 * 1024, partSize))
     for (let start = 0, index = 1; start < size; start += partSize, index++) {
-      const part = `${name}.part${String(index).padStart(2, '0')}`
+      const part = `${name}.part${String(index).padStart(partWidth, '0')}`
       const temporary = join(destination, part + '.' + randomUUID() + '.tmp')
       const output = await openFile(temporary, 'wx', 0o600)
       const hash = createHash('sha256')

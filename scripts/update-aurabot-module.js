@@ -8,6 +8,7 @@ import {patchBillionReconciliation} from './lib/billion-reconciliation-patch.js'
 import {patchBillionEgressRecovery} from './lib/billion-egress-recovery-patch.js';
 import {patchBillionScopedEgress} from './lib/billion-scoped-egress-patch.js';
 import {updateNativeChat} from './lib/native-chat-updater.js';
+import {sha256} from './lib/work-hours-patches.js';
 const root=fileURLToPath(new URL('../',import.meta.url)),args=process.argv.slice(2),at=args.indexOf('--data-dir');
 if(args.includes('--help')){console.log('Use --data-dir <absolute Aurabot directory> [--apply]. Default updates Thinkstar. --extension <fish-world|history-vault> updates that module. --native-host <absolute dsh-aurabot-qq directory> with --repair-owner-replies, --repair-native-context and/or --repair-background installs reviewed exact-version repairs; archive complete allowlisted host/forked-memory code and verify public download and disk restoration before writing. Background repairs cover self-drive reports/budget and bounded ZIP64/streaming backups. Background --apply requires --host-origin <loopback HTTP origin> and verifies idle owned agents. Native context adds an owner-scoped, preview/CAS panel maintenance API; installing it alone does not change memories. No models, chats, private data or host settings are published. Existing --compression-engine and repair flags remain supported. Native repairs require an idle host and official plugin reload after installation; they never restart or message on their own.');process.exit(0);}
 if(at<0||!path.isAbsolute(args[at+1]??''))throw Error('Use --data-dir <absolute Aurabot directory> [--apply]');
@@ -24,11 +25,11 @@ if(native>=0){
   transforms.push({area:'modules',path:'memory/context-review.js',transform:source=>{if(source!==null&&source!==helper)throw Error('Unrecognized existing native context helper');return helper;}},{area:'modules',path:'memory/index.mjs',transform:(source,options)=>patchNativeContextReview(source,options).source});
  }
  if(background){
-  const {patchAutotelicCorrectness,patchAutotelicReportLabels}=await import('./lib/autotelic-correctness-patch.js'),{patchBackupCapacity,BACKUP_CAPACITY_BASELINES}=await import('./lib/backup-capacity-patch.js');
+  const {patchAutotelicCorrectness,patchAutotelicReportLabels}=await import('./lib/autotelic-correctness-patch.js'),{patchBackupCapacity,BACKUP_CAPACITY_BASELINES,BACKUP_CAPACITY_PREVIOUS_HELPER_SHA256}=await import('./lib/backup-capacity-patch.js');
   const helper=readFileSync(new URL('../adapters/aurabot/native/backup-zip64.js',import.meta.url),'utf8');
   transforms.push({area:'host',path:'src/autotelic/runtime.js',transform:(source,options)=>patchAutotelicCorrectness(source,options).source});
   transforms.push({area:'host',path:'src/autotelic/reflect.js',transform:(source,options)=>patchAutotelicReportLabels(source,options).source});
-  transforms.push({area:'host',path:'src/core/backup-zip64.js',transform:source=>{if(source!==null&&source!==helper)throw Error('Unrecognized existing ZIP64 backup helper');return helper;}});
+  transforms.push({area:'host',path:'src/core/backup-zip64.js',transform:source=>{if(source!==null&&source!==helper&&![BACKUP_CAPACITY_PREVIOUS_HELPER_SHA256,'ef88d2a77a982f320f3c978c71a13b7a669227d7ce7c49aa23144b09b77cbfe1'].includes(sha256(source)))throw Error('Unrecognized existing ZIP64 backup helper');return helper;}});
   for(const file of Object.keys(BACKUP_CAPACITY_BASELINES))transforms.push({area:'host',path:file,transform:(source,options)=>patchBackupCapacity(source,{...options,file}).source});
  }
  let validateHost;

@@ -6,14 +6,17 @@ import { pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { crc32 } from 'node:zlib';
 import { EventEmitter } from 'node:events';
-import { patchBackupCapacity, BACKUP_CAPACITY_BASELINES } from '../scripts/lib/backup-capacity-patch.js';
+import { patchBackupCapacity, BACKUP_CAPACITY_BASELINES, BACKUP_CAPACITY_PREVIOUS_HELPER_SHA256 } from '../scripts/lib/backup-capacity-patch.js';
+import { createHash } from 'node:crypto';
 import { withZip64Offset, backupZipEnd, backupZipDirectory, backupEntryOffset, boundedBackupChunks, splitBackupFile } from '../adapters/aurabot/native/backup-zip64.js';
 
 // Use an explicitly restored, reviewed pre-patch code baseline; never assume a
 // developer's live installation is still the original after deploying a repair.
 const native = process.env.BACKUP_CAPACITY_HOST_ROOT;
 const available = !!native && fs.existsSync(path.join(native, 'src/core/backup.js'));
-const maxZip = 9 * 1024 ** 3, maxDirectory = 32 * 1024 ** 2, U32 = 0xffffffff;
+const installed = process.env.BACKUP_CAPACITY_INSTALLED_ROOT;
+const installedAvailable = !!installed && fs.existsSync(path.join(installed, 'src/core/backup-zip64.js'));
+const maxZip = 18 * 1024 ** 3, expandedLimit = 16 * 1024 ** 3, maxDirectory = 32 * 1024 ** 2, U32 = 0xffffffff;
 const scratch = () => {
   assert.ok(process.env.THINKSTAR_TEST_TMP, 'Use scripts/run-tests.js');
   return fs.mkdtempSync(path.join(process.env.THINKSTAR_TEST_TMP, 'backup-capacity-'));
@@ -35,10 +38,10 @@ async function fixture({ patched = true, exportPrivate = false } = {}) {
   }
   return { folder, data, api: await import(pathToFileURL(path.join(core, 'backup.js')).href), push: await import(pathToFileURL(path.join(core, 'backup-push.js')).href) };
 }
-function logicalArchive(api) {
+function logicalArchive(api, tailOffset = U32 + 72) {
   const specs = [
     { name: 'data/config.json', body: Buffer.from('{}'), offset: 0 },
-    { name: 'data/late.txt', body: Buffer.from('synthetic ZIP64 tail'), offset: U32 + 72 },
+    { name: 'data/late.txt', body: Buffer.from('synthetic ZIP64 tail'), offset: tailOffset },
   ];
   const segments = [], entries = [];
   for (const item of specs) {
@@ -80,6 +83,25 @@ test('backup patch fails closed on changed/version-mismatched code and is hash-c
     assert.throws(() => patchBackupCapacity(result.source + '\n', { file }), /verified baseline/);
     assert.throws(() => patchBackupCapacity(input, { file, version: 'future' }), /Unsupported/);
   }
+});
+
+test('exact deployed v1 files forward to the same 16/18GiB result as original source; unchanged host and helper are audited', { skip: !available || !installedAvailable }, () => {
+  for (const file of Object.keys(BACKUP_CAPACITY_BASELINES)) {
+    const original = patchBackupCapacity(readSource(file), { file });
+    const previous = fs.readFileSync(path.join(installed, file), 'utf8');
+    const advanced = patchBackupCapacity(previous, { file });
+    assert.equal(advanced.source, original.source, file);
+    assert.equal(advanced.changed, file !== 'src/host.js');
+    assert.equal(patchBackupCapacity(advanced.source, { file }).changed, false);
+    assert.throws(() => patchBackupCapacity(previous + '\n', { file }), /verified baseline/);
+    if (file === 'src/core/backup.js') {
+      assert.match(advanced.source, /const MAX_EXPANDED = 16 \* 1024 \*\* 3/);
+      assert.match(advanced.source, /const MAX_ZIP = 18 \* 1024 \*\* 3/);
+      assert.match(advanced.source, /const MAX_FILE = 2 \*\* 31 - 1/);
+    }
+    if (file === 'src/core/backup-push.js') assert.equal(advanced.source.split('18 * 1024 ** 3').length, 4);
+  }
+  assert.equal(createHash('sha256').update(fs.readFileSync(path.join(installed, 'src/core/backup-zip64.js'))).digest('hex'), BACKUP_CAPACITY_PREVIOUS_HELPER_SHA256);
 });
 
 test('small ZIP32 output stays byte-identical; ZIP64 streamed import stages, checks and restores real synthetic bytes', { skip: !available }, async () => {
@@ -161,6 +183,48 @@ test('ZIP64 rejects corrupt locator/range/count/extra fields while preserving en
   await assert.rejects(f.api.readEntries(virtual, a.size), /资源限制/);
 });
 
+test('16GiB expanded and 18GiB container boundaries accept exact limits and reject one byte over without giant files', { skip: !available }, async () => {
+  const f = await fixture({ exportPrivate: true });
+  const handle = archive => ({ read: async (out, offset, length, position) => { (await archive.read(null, length, position)).copy(out, offset); return { bytesRead: length }; } });
+  const sample = logicalArchive(f.api), overhead = sample.size - (U32 + 72);
+  const exactContainer = logicalArchive(f.api, maxZip - overhead);
+  assert.equal(exactContainer.size, maxZip);
+  assert.equal((await f.api.readEntries(handle(exactContainer), exactContainer.size)).length, 2);
+  const overContainer = logicalArchive(f.api, maxZip - overhead + 1);
+  await assert.rejects(f.api.readEntries(handle(overContainer), overContainer.size), /ZIP64/);
+
+  function expandedArchive(extra) {
+    const lengths = [2, ...Array(8).fill(2 ** 31 - 1), 6 + extra];
+    const entries = [], segments = []; let offset = 0;
+    lengths.forEach((size, index) => {
+      const entry = { name: index ? `data/synthetic-${index}.bin` : 'data/config.json', offset, method: 0, time: 0, date: 33, crc: 0, packed: size, size };
+      const head = f.api.localHeader(entry); entries.push(entry); segments.push({ at: offset, bytes: head }); offset += head.length + size;
+    });
+    const central = Buffer.concat(entries.map(f.api.centralHeader)), end = backupZipEnd(entries.length, central.length, offset);
+    segments.push({ at: offset, bytes: Buffer.concat([central, end]) });
+    const size = offset + central.length + end.length;
+    return { size, entries, read: async (_unused, length, position) => {
+      assert.ok(length <= maxDirectory && position >= 0 && position + length <= size);
+      const bytes = Buffer.alloc(length);
+      for (const segment of segments) {
+        const from = Math.max(position, segment.at), to = Math.min(position + length, segment.at + segment.bytes.length);
+        if (to > from) segment.bytes.copy(bytes, from - position, from - segment.at, to - segment.at);
+      }
+      return bytes;
+    } };
+  }
+  const exactExpanded = expandedArchive(0);
+  assert.equal(exactExpanded.entries.reduce((sum, entry) => sum + entry.size, 0), expandedLimit);
+  assert.equal((await f.api.readEntries(handle(exactExpanded), exactExpanded.size)).length, 10);
+  const overExpanded = expandedArchive(1);
+  await assert.rejects(f.api.readEntries(handle(overExpanded), overExpanded.size), /资源限制/);
+  let closed = false;
+  await assert.rejects(splitBackupFile('too-large', 'unused', 'aurabot-backup-20261124-0100.zip', 95 * 1024 * 1024, {
+    openFile: async () => ({ stat: async () => ({ isFile: () => true, size: BigInt(maxZip + 1) }), close: async () => { closed = true; } }),
+  }), /大小无效/);
+  assert.equal(closed, true);
+});
+
 test('stream budget handles >4GiB with a reused 1MiB buffer and rejects overrun, truncation and invalid chunks', async () => {
   const block = Buffer.alloc(1024 * 1024); let bytes = 0, chunks = 0;
   async function* input() { for (let i = 0; i < 4097; i++) yield block; }
@@ -185,6 +249,13 @@ test('Gitee parts preserve ordering, hashes and bounded writes; interrupted part
   }), /synthetic read failure/);
   assert.equal(closed, 2); assert.equal(removed, 1);
   assert.ok(fs.readdirSync(dest).every(n => !n.endsWith('.tmp')));
+  const manySource = path.join(folder, 'many.zip'), manyDestination = path.join(folder, 'many');
+  const manyBytes = Buffer.from(Array.from({ length: 101 }, (_, index) => index));
+  fs.writeFileSync(manySource, manyBytes); fs.mkdirSync(manyDestination);
+  const manyParts = await splitBackupFile(manySource, manyDestination, name, 1);
+  assert.ok(manyParts[0].name.endsWith('.part001'));
+  assert.ok(manyParts.at(-1).name.endsWith('.part101'));
+  assert.deepEqual(Buffer.concat(fs.readdirSync(manyDestination).sort().map(n => fs.readFileSync(path.join(manyDestination, n)))), manyBytes);
 });
 
 test('Gitee splitter crosses 32-bit source positions with a simulated writer and never allocates or writes a whole archive', async () => {
