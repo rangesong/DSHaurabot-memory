@@ -57,6 +57,41 @@ export class V5SelfReflection{
       return summary;
     });
   }
+  reviewMissingNoteEvidence({limit=100}={}){
+    const summary={status:'reviewed',scanned:0,updated_rows:0,updated_actions:0,conflicts:0,has_more:false,items:[]};
+    if(this.busy)return {...summary,status:'deferred'};
+    const count=Number.isFinite(Number(limit))?Math.min(1000,Math.max(1,Math.trunc(Number(limit)))):100;
+    const rows=this.r.store.sql(`SELECT s.id,s.json FROM self_reflections s WHERE json_extract(s.json,'$.status') IN ('completed','review_required')
+      AND EXISTS (SELECT 1 FROM json_each(s.json,'$.actions') a WHERE CASE WHEN a.type='object' THEN json_extract(a.value,'$.type')='note' AND json_extract(a.value,'$.status')='completed' ELSE 0 END)
+      ORDER BY s.created DESC,s.id LIMIT ?`).all(count+1);
+    summary.has_more=rows.length>count;const plans=[];
+    for(const stored of rows.slice(0,count)){
+      summary.scanned++;const row=JSON.parse(stored.json),changed=[];
+      if(!Array.isArray(row.actions)||row.actions.length>3)continue;
+      for(const action of row.actions){
+        if(action?.type!=='note'||action.status!=='completed'||typeof action.id!=='string'||!action.id||['material_version','provided_source_ids','based_on_sources','evidence_review'].some(key=>Object.hasOwn(action,key))||typeof action.observation!=='string')continue;
+        const observation=action.observation;
+        const missing=/(?:today|今天|今日|当天|当日|这一天)[\s\S]{0,24}(?:记录|资料|材料|原文|对话)[\s\S]{0,24}(?:没拿到|未拿到|没取得|未取得|没读到|未读到|缺失|不可用)/i.test(observation)||/内容缺料/.test(observation);
+        const template=/(?:^|[。！？；\n：:，,])\s*(?:只能|只有|只是|仅能|仅有|仅是|先给|先列|先搭|先写)[\s\S]{0,18}(?:模板|框架|提纲)/.test(observation);
+        if(!missing||!template)continue;
+        action.evidence_review={kind:'historical-note-material-review',version:1,reviewed_at:this.r.clock(),previous_status:action.status,previous_parent_status:row.status,
+          reason:'旧记录明确表示当日资料缺失且只有模板，完成标签待复核；原文、问答、来源与学习文档均保留。',reason_codes:['daily_material_missing','template_only']};
+        action.status='no_evidence';changed.push(action.id);
+      }
+      if(changed.length){row.status='review_required';plans.push({id:stored.id,before:stored.json,row,actions:changed});}
+    }
+    if(!plans.length)return summary;
+    return this.r.store.tx(()=>{
+      for(const plan of plans){
+        const result=this.r.store.sql('UPDATE self_reflections SET json=? WHERE id=? AND json=?').run(JSON.stringify(plan.row),plan.id,plan.before);
+        if(!result.changes){summary.conflicts++;continue;}
+        this.r.dialogue.activity({id:'self-note-material-review:'+plan.id,scope:plan.row.scope,category:'learning',title:'复核历史笔记的材料依据',status:'review_required',source_refs:plan.row.source_refs??[],
+          detail:{reflection_id:plan.id,action_ids:plan.actions,preserved_originals:true,classification_version:1}});
+        summary.updated_rows++;summary.updated_actions+=plan.actions.length;summary.items.push({id:plan.id,action_ids:plan.actions});
+      }
+      return summary;
+    });
+  }
   schedule(scope,day=previousChinaDay(this.r.clock())){
     this.r.requireScope(scope);const now=this.r.clock(),config=this.r.config.W5,window=selfReflectionWindow(now,config),limit=Math.max(1,Math.min(12,Math.trunc(config.self_rounds_per_night??5))),interval=Math.max(5,Number(config.self_round_interval_minutes??20))*60000;
     const rows=this.r.store.sql('SELECT json FROM self_reflections WHERE scope=? AND day=? ORDER BY created').all(scope,day).map(x=>JSON.parse(x.json)),last=rows.at(-1),resume=last?.status==='paused'&&last.questions.length&&last.actions.some(a=>a.status==='pending');
@@ -101,19 +136,38 @@ export class V5SelfReflection{
       row.actions=(Array.isArray(response.value.actions)?response.value.actions:[]).filter(a=>['read','practice','note'].includes(a.type)).slice(0,max).map((a,i)=>({id:id+':action:'+i,type:a.type,title:text(a.title,120),query:text(a.query,160),reason:text(a.reason,220),source_ids:validRefs(a.source_ids),status:'pending'}));
       }if(!row.strategy_learning){row.strategy_learning=this.r.strategyLearning.prepareNight({scope,reflection_id:id,allowSource,proposals:Array.isArray(response?.value.strategy_proposals)?response.value.strategy_proposals.slice(0,3):[]});}row.status='reflected';this.save(row);
       const doneQueries=new Set(schedule.earlier_rounds.flatMap(r=>r.actions.filter(a=>a.status!=='pending').map(a=>String(a.query).normalize('NFKC').toLowerCase().replace(/\s+/g,'').trim())));
+      const materialFor=action=>{
+        const selected=[];
+        for(const ref of new Set([...(action.source_ids??[]),...refs])){
+          if(!refs.includes(ref))continue;
+          const source=this.r.store.getSource(ref);
+          if(source?.scope!==scope||source.role!=='user'||!Number.isSafeInteger(source.occurred_at)||source.occurred_at<from||source.occurred_at>=until||!allowSource(source)||!text(source.text,350))continue;
+          selected.push({id:source.id,text:text(source.text,350),occurred_at:source.occurred_at});if(selected.length>=8)break;
+        }
+        const ids=new Set(selected.map(source=>source.id)),selectedRefs=item=>(item.source_ids??[]).filter(ref=>ids.has(ref));
+        const questions=row.questions.filter(item=>selectedRefs(item).length).slice(0,3).map(item=>({question:text(item.question,120),answer:text(item.answer,350),source_ids:selectedRefs(item),status:'tentative_self_reflection'}));
+        const lessons=row.lessons.filter(item=>selectedRefs(item).length).slice(0,2).map(item=>({text:text(item.text,220),source_ids:selectedRefs(item),status:'tentative_self_reflection'}));
+        return {day,scope,is_partial:true,sources:selected,...(questions.length?{questions}:{}),...(lessons.length?{lessons}:{})};
+      };
       for(const action of row.actions){
         if(action.status!=='pending')continue;
         if(!alive()){row.status='paused';break;}
         if(doneQueries.has(action.query.normalize('NFKC').toLowerCase().replace(/\s+/g,'').trim())){action.status='skipped_duplicate';action.reason='此前轮次已经处理相同主题，保留记录而不重复执行';this.save(row);continue;}
         if(!action.query||/\b(?:sk-|ghp_|github_pat_)|[\w.+-]+@[\w.-]+|\b\d{7,}\b/.test(action.query)){action.status='blocked';action.reason='行动主题含私人标识或不适合公开检索';this.save(row);continue;}
+        const material=action.type==='read'?undefined:materialFor(action);
+        if(material){action.material_version=1;action.provided_source_ids=material.sources.map(source=>source.id);}else action.provided_source_ids=[];
+        if(action.type==='note'&&!material.sources.length){action.status='no_evidence';action.observation='未取得该日期、同范围且当前仍允许使用的原始资料，本次未启动笔记整理。';action.based_on_sources=[];action.based_on_sources_kind='model_cited_sources';action.tool_receipts=[];action.completed_at=this.r.clock();this.save(row);continue;}
         action.status='running';action.started_at=this.r.clock();this.save(row);
         try{
           if(typeof execute!=='function')throw Error('宿主行动接口不可用');
-          const result=await execute(action,{timeoutMs:this.r.config.W5.self_action_timeout_ms??90000,active:alive});
+          const result=await execute(action,{timeoutMs:this.r.config.W5.self_action_timeout_ms??90000,active:alive,...(material?{material}:{})});
           if(!alive()){row.status='paused';action.status='interrupted';break;}
-          action.status=result.status;action.observation=text(result.observation,2500);action.tool_receipts=(result.tool_receipts??[]).slice(0,6);action.completed_at=this.r.clock();
+          const cited=[...new Set((Array.isArray(result.based_on_sources)?result.based_on_sources:[]).filter(ref=>material?.sources.some(source=>source.id===ref)))];
+          action.status=action.type==='note'&&result.status==='completed'&&!cited.length?'no_evidence':result.status;action.observation=text(result.observation,2500);action.tool_receipts=(result.tool_receipts??[]).slice(0,6);action.completed_at=this.r.clock();
+          if(Array.isArray(result.based_on_sources)||action.type==='note'){action.based_on_sources=cited;action.based_on_sources_kind='model_cited_sources';}
+          if(action.type==='note'&&result.status==='completed'&&!cited.length)action.observation=text(action.observation+'\n笔记没有引用本轮允许的资料，不能作为已完成的有依据整理。',2500);
           // Only mechanically observed work results enter the memory base. Self-questions remain provisional.
-          if(result.status==='completed'&&action.observation){const original=this.r.ingest({scope,text:'自主学习行动：'+action.title+'\n实际观察：'+action.observation,role:'document',command_id:action.id,source_id:action.id,provenance:{kind:'self_learning_result',speaker_id:'thinkstar:self',reflection_id:id,action_id:action.id,observed_tools:action.tool_receipts.map(x=>({tool:x.tool,status:x.status})),source_refs:refs,factual_status:action.type==='read'?'observed_tool_output':'generated_practice_note'}});action.memory_id=original.memory_id;action.source_id=original.source_id;}
+          if(action.status==='completed'&&action.observation){const original=this.r.ingest({scope,text:'自主学习行动：'+action.title+'\n实际观察：'+action.observation,role:'document',command_id:action.id,source_id:action.id,provenance:{kind:'self_learning_result',speaker_id:'thinkstar:self',reflection_id:id,action_id:action.id,observed_tools:action.tool_receipts.map(x=>({tool:x.tool,status:x.status})),source_refs:refs,...(action.based_on_sources?{model_cited_sources:action.based_on_sources}:{}),factual_status:action.type==='read'?'observed_tool_output':'generated_practice_note'}});action.memory_id=original.memory_id;action.source_id=original.source_id;}
         }catch(error){action.status='failed';action.error=text(error.message,240);}this.save(row);
       }
       if(row.status!=='paused')row.status=row.actions.some(a=>['failed','blocked','no_evidence','interrupted'].includes(a.status))?'review_required':'completed';row.finished_at=this.r.clock();if(refs.every(id=>this.r.store.getSource(id)))this.save(row);

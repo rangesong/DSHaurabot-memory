@@ -124,3 +124,112 @@ test('historical read label changes and their audit roll back together on storag
  assert.throws(()=>f.r.selfReflection.reviewReadEvidence(),/synthetic audit/);f.r.dialogue.activity=activity;
  assert.deepEqual(f.r.selfReflection.get(original.id),original);assert.equal(f.r.selfReflection.reviewReadEvidence().updated_rows,1);
 });
+
+function planMaterialAction(f,{type='note',sourceIds=[f.source.source_id],query='整理已提供的日常资料',questions,lessons=[]}={}){
+ f.options.client.json=async()=>({value:{questions:questions??[{question:'这一天有什么依据',answer:'只依据提供的局部资料整理',source_ids:sourceIds}],actions:[{type,title:'合成有依据的行动',query,source_ids:sourceIds}],lessons}});
+}
+const citedNote=material=>({status:'completed',observation:'合成笔记[资料1]，这些只是当前提供的部分资料。',based_on_sources:[material.sources[0].id],tool_receipts:[]});
+
+test('note execution receives explicit previous-day partial material and records model citations separately from facts',async t=>{
+ const f=fixture(t);planMaterialAction(f,{lessons:[{text:'合成暂定认识',source_ids:[f.source.source_id]}]});let received;
+ const result=await f.r.selfReflection.run({...f.options,execute:async(action,options)=>{received={action:structuredClone(action),material:structuredClone(options.material)};return citedNote(options.material);}});
+ assert.equal(result.status,'completed');assert.equal(received.material.day,'2026-11-16');assert.equal(received.material.scope,f.scope);assert.equal(received.material.is_partial,true);
+ assert.deepEqual(received.material.sources,[{id:f.source.source_id,text:f.r.store.getSource(f.source.source_id).text,occurred_at:Date.parse('2026-11-16T18:00:00+08:00')}]);
+ assert.equal(received.material.questions[0].status,'tentative_self_reflection');assert.equal(received.material.lessons[0].status,'tentative_self_reflection');
+ const action=f.r.selfReflection.get(result.id).actions[0];assert.equal(action.material_version,1);assert.deepEqual(action.provided_source_ids,[f.source.source_id]);assert.deepEqual(action.based_on_sources,[f.source.source_id]);assert.equal(action.based_on_sources_kind,'model_cited_sources');
+ assert.deepEqual(f.r.store.getSource(action.source_id).provenance.model_cited_sources,[f.source.source_id]);assert.equal(f.r.store.getSource(action.source_id).provenance.factual_status,'generated_practice_note');
+});
+
+test('action material prioritizes action references and bounds sources, text and tentative planning output',async t=>{
+ const f=fixture(t),sources=[];
+ for(let i=0;i<12;i++)sources.push(f.r.ingest({scope:f.scope,text:'合成私密标记'+i+'：'+'局部来源资料'.repeat(90),occurred_at:Date.parse('2026-11-16T18:00:00+08:00')+i*60000,process:true}));
+ const primary=sources[0].source_id,questions=Array.from({length:6},(_,i)=>({question:'合成问题'+i,answer:'暂定回答'.repeat(120),source_ids:[primary]})),lessons=Array.from({length:3},(_,i)=>({text:'合成认识'+i+'局部'.repeat(150),source_ids:[primary]}));
+ planMaterialAction(f,{sourceIds:[primary],query:'整理局部原始资料',questions,lessons});let material;
+ await f.r.selfReflection.run({...f.options,execute:async(action,options)=>{material=options.material;assert.equal(action.query,'整理局部原始资料');assert.doesNotMatch(action.query,/合成私密标记/);return citedNote(material);}});
+ assert.equal(material.sources.length,8);assert.equal(material.sources[0].id,primary);assert.ok(material.sources.every(source=>source.text.length<=350));assert.equal(material.questions.length,3);assert.ok(material.questions.every(q=>q.answer.length<=350));assert.equal(material.lessons.length,2);assert.ok(material.lessons.every(lesson=>lesson.text.length<=220));assert.equal(material.is_partial,true);
+});
+
+test('material date checks keep Beijing previous-day boundaries and exclude changed day, role and foreign scope',async t=>{
+ const f=fixture(t),from=Date.parse('2026-11-16T00:00:00+08:00'),inside=f.r.ingest({scope:f.scope,text:'合成日界线当天零点资料',occurred_at:from,process:true}),last=f.r.ingest({scope:f.scope,text:'合成日界线最后一毫秒资料',occurred_at:from+86400000-1,process:true}),foreignScope=f.r.addScope({persona_id:'foreign',scope:'private:other'}).id;
+ const changed=f.r.ingest({scope:f.scope,text:'不应交出的异域资料',occurred_at:from+1000,process:true}),outside=f.r.ingest({scope:f.scope,text:'不应交出的跨期资料',occurred_at:from+2000,process:true});
+ planMaterialAction(f,{sourceIds:[inside.source_id,last.source_id,changed.source_id,outside.source_id,f.source.source_id]});const question=f.options.client.json;
+ f.options.client.json=async(...args)=>{const result=await question(...args);f.r.store.updateSourceMetadata(changed.source_id,{scope:foreignScope});f.r.store.updateSourceMetadata(outside.source_id,{occurred_at:from+86400000});f.r.store.updateSourceMetadata(f.source.source_id,{role:'assistant'});return result;};let material;
+ await f.r.selfReflection.run({...f.options,execute:async(_action,options)=>{material=options.material;return citedNote(material);}});
+ assert.deepEqual(material.sources.map(source=>source.id),[inside.source_id,last.source_id]);assert.ok(material.sources.every(source=>source.occurred_at>=from&&source.occurred_at<from+86400000));
+});
+
+test('missing current authorized note material does not start execution or create a learning memory',async t=>{
+ const f=fixture(t);planMaterialAction(f);const question=f.options.client.json;f.options.client.json=async(...args)=>{const result=await question(...args);f.r.store.updateSourceMetadata(f.source.source_id,{role:'assistant'});return result;};let calls=0;
+ const before=f.r.store.sql('SELECT count(*) n FROM sources').get().n,result=await f.r.selfReflection.run({...f.options,execute:async()=>{calls++;return {status:'completed',observation:'不应执行的模板'};}}),action=f.r.selfReflection.get(result.id).actions[0];
+ assert.equal(result.status,'review_required');assert.equal(calls,0);assert.equal(action.status,'no_evidence');assert.equal(action.memory_id,undefined);assert.equal(action.started_at,undefined);assert.deepEqual(action.provided_source_ids,[]);assert.match(action.observation,/未启动笔记整理/);assert.equal(f.r.store.sql('SELECT count(*) n FROM sources').get().n,before);
+});
+
+test('note completion requires an authorized material citation and discards unrelated claimed source IDs',async t=>{
+ const f=fixture(t);planMaterialAction(f);const result=await f.r.selfReflection.run({...f.options,execute:async()=>({status:'completed',observation:'无依据的模板',based_on_sources:['foreign-source'],tool_receipts:[]})}),action=f.r.selfReflection.get(result.id).actions[0];
+ assert.equal(result.status,'review_required');assert.equal(action.status,'no_evidence');assert.deepEqual(action.based_on_sources,[]);assert.equal(action.memory_id,undefined);
+});
+
+test('retired or privacy-erased planning sources are never handed to an action executor',async t=>{
+ for(const mode of ['retired','erased']){
+  const f=fixture(t);planMaterialAction(f);const question=f.options.client.json,groupLifecycle=f.r.groupLifecycle.bind(f.r);let executions=0;
+  f.options.client.json=async(...args)=>{const result=await question(...args);if(mode==='erased')f.r.eraseSources([f.source.source_id]);else f.r.groupLifecycle=(...options)=>{const lifecycle=groupLifecycle(...options),retired=lifecycle.retiredSource.bind(lifecycle);lifecycle.retiredSource=id=>id===f.source.source_id||retired(id);return lifecycle;};return result;};
+  const result=await f.r.selfReflection.run({...f.options,execute:async()=>{executions++;return {status:'completed',observation:'不可发生'};}});assert.equal(result.status,'cancelled',mode);assert.equal(executions,0,mode);
+ }
+});
+
+test('read execution retains its public query and may proceed without personal material',async t=>{
+ const f=fixture(t);planMaterialAction(f,{type:'read',query:'星云形成 公开科普'});const question=f.options.client.json;f.options.client.json=async(...args)=>{const result=await question(...args);f.r.store.updateSourceMetadata(f.source.source_id,{role:'assistant'});return result;};let executed=false;
+ await f.r.selfReflection.run({...f.options,execute:async(action,options)=>{executed=true;assert.equal(action.query,'星云形成 公开科普');assert.equal(options.material,undefined);assert.equal(Object.hasOwn(options,'material'),false);return {status:'no_evidence',observation:'合成公开阅读未取到结果',tool_receipts:[]};}});assert.equal(executed,true);
+});
+
+test('public read executor receives no private material even when valid private sources exist',async t=>{
+ const f=fixture(t),privateText='合成私密标记：我向主人承诺的私聊细节，不得进入公开阅读执行器。';f.r.store.updateSourceMetadata(f.source.source_id,{text:privateText});planMaterialAction(f,{type:'read',query:'星云形成 公开科普'});let executed=false;
+ const result=await f.r.selfReflection.run({...f.options,execute:async(action,options)=>{executed=true;assert.equal(f.r.store.getSource(f.source.source_id).role,'user');assert.equal(action.query,'星云形成 公开科普');assert.equal(Object.hasOwn(options,'material'),false);assert.equal(options.material,undefined);assert.doesNotMatch(JSON.stringify(options),/合成私密标记/);return {status:'no_evidence',observation:'合成公开资料尚未取得',tool_receipts:[]};}});
+ assert.equal(executed,true);const action=f.r.selfReflection.get(result.id).actions[0];assert.deepEqual(action.provided_source_ids,[]);assert.equal(action.material_version,undefined);
+});
+
+test('restart and resume rebuild material from current allowed sources rather than saved source text',async t=>{
+ const f=fixture(t),id=f.r.selfReflection.schedule(f.scope).id;historicalRound(f,id,[historicalReading(f,id+':action:0',{type:'note',status:'pending',extra:{source_ids:[f.source.source_id]}})],{status:'paused'});
+ const root=testRuntimeRoot(fileURLToPath(new URL('../runtime-data/',import.meta.url))),folder=fs.mkdtempSync(path.join(root,'material-resume-')),file=path.join(folder,'memory.sqlite');await backup(f.r.store.db,file);
+ const restarted=new V5Runtime({file,clock:()=>at('01:05')});t.after(()=>restarted.close());restarted.store.updateSourceMetadata(f.source.source_id,{text:'合成恢复后重新取到的当前原文'});let material,questionCalls=0;
+ const result=await restarted.selfReflection.run({...f.options,client:{...f.options.client,json:async()=>{questionCalls++;throw Error('resume must not replan');}},execute:async(_action,options)=>{material=options.material;return citedNote(material);}});
+ assert.equal(result.status,'completed');assert.equal(questionCalls,0);assert.equal(material.day,'2026-11-16');assert.equal(material.sources[0].text,'合成恢复后重新取到的当前原文');assert.equal(restarted.selfReflection.get(id).actions[0].provided_source_ids[0],f.source.source_id);
+});
+
+const missingNoteText='想看的 today 记录没拿到：world_now 返回「此自主学习回合只开放查询与阅读」，working_directory 同样被拦。所以今天聊了什么、答应了谁什么、有没有待办，我手上没有依据，不编。\n今天的对话细节一条都没有，所以「待办候选」这栏现在是空的，只有模板。\n结论：模板可用，内容缺料，等能读记录时再填。';
+test('historical note review corrects explicit missing-material template completion while preserving every original',t=>{
+ const f=fixture(t),document=f.r.ingest({scope:f.scope,role:'document',text:'合成旧笔记原文：'+missingNoteText,process:true}),note=historicalReading(f,'old-note',{type:'note',extra:{observation:missingNoteText,memory_id:document.memory_id,source_id:document.source_id}}),original=historicalRound(f,'old-note-round',[note]),before=durableOriginals(f.r);
+ const result=f.r.selfReflection.reviewMissingNoteEvidence();assert.equal(result.updated_rows,1);assert.equal(result.updated_actions,1);
+ const row=f.r.selfReflection.get(original.id),action=row.actions[0];assert.equal(row.status,'review_required');assert.equal(action.status,'no_evidence');assert.equal(action.evidence_review.previous_status,'completed');assert.equal(action.evidence_review.previous_parent_status,'completed');
+ const {status,evidence_review,...preserved}=action,{status:oldStatus,...expected}=note;assert.deepEqual(preserved,expected);assert.deepEqual(row.questions,original.questions);assert.deepEqual(row.lessons,original.lessons);assert.deepEqual(durableOriginals(f.r),before);
+ const changes=changeCount(f.r);assert.equal(f.r.selfReflection.reviewMissingNoteEvidence().updated_rows,0);assert.equal(changeCount(f.r),changes);
+});
+
+test('historical note review requires both signals and skips normal, modern, unknown and unfinished records',t=>{
+ const f=fixture(t),cases=[
+   historicalReading(f,'normal-note',{type:'note',extra:{observation:'这是根据合成资料整理的笔记，没有旧版本引用字段。'}}),
+   historicalReading(f,'only-missing',{type:'note',extra:{observation:'今天记录没拿到，但已有公开来源的整理结果。'}}),
+   historicalReading(f,'only-template',{type:'note',extra:{observation:'只有模板，这本身就是本轮要求产出的可复用表格。'}}),
+   historicalReading(f,'negated-template',{type:'note',extra:{observation:'今天记录没拿到，不是只有模板，而是有另外取得的资料。'}}),
+   historicalReading(f,'new-provided',{type:'note',extra:{observation:missingNoteText,provided_source_ids:[]}}),
+   historicalReading(f,'new-based',{type:'note',extra:{observation:missingNoteText,based_on_sources:[]}}),
+   historicalReading(f,'new-version',{type:'note',extra:{observation:missingNoteText,material_version:1}}),
+   historicalReading(f,'practice-template',{type:'practice',extra:{observation:missingNoteText}}),
+   historicalReading(f,'pending-note',{type:'note',status:'pending',extra:{observation:missingNoteText}}),
+ ];for(const note of cases)historicalRound(f,'preserve-'+note.id,[note]);historicalRound(f,'preserve-paused-note',[historicalReading(f,'paused-note',{type:'note',extra:{observation:missingNoteText}})],{status:'paused'});
+ const before=f.r.store.sql('SELECT id,json FROM self_reflections ORDER BY id').all(),changes=changeCount(f.r);assert.equal(f.r.selfReflection.reviewMissingNoteEvidence().updated_rows,0);assert.equal(changeCount(f.r),changes);assert.deepEqual(f.r.store.sql('SELECT id,json FROM self_reflections ORDER BY id').all(),before);
+});
+
+test('historical note review is bounded, defers while busy and preserves concurrent edits with CAS',t=>{
+ const f=fixture(t);for(let i=0;i<2;i++)historicalRound(f,'bounded-note-'+i,[historicalReading(f,'bounded-action-'+i,{type:'note',extra:{observation:missingNoteText}})],{created:at('01:00')+i});
+ f.r.selfReflection.busy=true;const before=changeCount(f.r);assert.equal(f.r.selfReflection.reviewMissingNoteEvidence().status,'deferred');assert.equal(changeCount(f.r),before);f.r.selfReflection.busy=false;
+ const first=f.r.selfReflection.reviewMissingNoteEvidence({limit:1});assert.equal(first.scanned,1);assert.equal(first.updated_rows,1);assert.equal(first.has_more,true);
+ const original=f.r.selfReflection.get('bounded-note-0'),tx=f.r.store.tx.bind(f.r.store);f.r.store.tx=callback=>{f.r.selfReflection.save({...original,parallel_edit:'保留并行更新'});return tx(callback);};
+ const conflict=f.r.selfReflection.reviewMissingNoteEvidence({limit:1});assert.equal(conflict.conflicts,1);assert.equal(conflict.updated_rows,0);assert.equal(f.r.selfReflection.get(original.id).parallel_edit,'保留并行更新');assert.equal(f.r.selfReflection.get(original.id).actions[0].status,'completed');
+});
+
+test('historical note review rolls label changes back if its audit cannot be stored',t=>{
+ const f=fixture(t),original=historicalRound(f,'rollback-note-review',[historicalReading(f,'rollback-note-action',{type:'note',extra:{observation:missingNoteText}})]),activity=f.r.dialogue.activity.bind(f.r.dialogue);
+ f.r.dialogue.activity=()=>{throw Error('synthetic note audit failure');};assert.throws(()=>f.r.selfReflection.reviewMissingNoteEvidence(),/synthetic note audit/);f.r.dialogue.activity=activity;
+ assert.deepEqual(f.r.selfReflection.get(original.id),original);assert.equal(f.r.selfReflection.reviewMissingNoteEvidence().updated_rows,1);
+});

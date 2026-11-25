@@ -33,7 +33,7 @@ export async function startThinkstar(api){
   const file=resolve(api.dataDir('memory.sqlite'));
   const registry=globalThis[INSTANCES]??=new Map();
   if(registry.has(file))await registry.get(file).dispose();
-  let active=true,closing=null,lastTick=0,lastMaintenance=0,lastError=null,readingReview=null;
+  let active=true,closing=null,lastTick=0,lastMaintenance=0,lastError=null,readingReview=null,noteReview=null;
   const pending=new Set(),recentSenders=new Map(),ingressPersonas=new Map(),messageObservations=new Map();
   const settings=()=>api.settings();
   const available=()=>active&&settings().masterEnabled!==false&&!api.config().debug;
@@ -311,7 +311,7 @@ export async function startThinkstar(api){
     const check=rows=>Array.isArray(rows)&&rows.length===2&&!rows.some(row=>row.id==='thinkstar-probe-expired')&&rows.some(row=>row.id==='thinkstar-probe-protected')&&rows.some(row=>row.id==='thinkstar-probe-private');
     return {ok:check(own)&&check(native)&&check(vault),thinkstar:check(own),native_memory:check(native),history_vault:check(vault),coverage:runtime.externalGroupCoverage(),synthetic_only:true,model_calls:0,qq_sends:0,memory_records_written:0};
   }
-  function status(){if(!active)return {ok:false,module:MODULE,state:'stopped'};return {ok:true,module:MODULE,version:manifest.version,mode:settings().mode,master_enabled:settings().masterEnabled!==false,night_reflection_enabled:settings().nightReflectionEnabled===true&&settings().mode==='active',reading_evidence_review:readingReview,stats:runtime.store.stats(),archive:runtime.archive.stats(),native_preparation:{policy:nativePolicy.status(),coverage:runtime.externalGroupCoverage()},compatibility:compat.status(),integration,host_context:hostContext.status(),last_error:lastError,model:client.status(),model_asset_installed:existsSync(api.dataDir('assets','blue-maid-starry.glb')),atlas_url:BASE+'/',builtin_memory_running:api.has('memory')};}
+  function status(){if(!active)return {ok:false,module:MODULE,state:'stopped'};return {ok:true,module:MODULE,version:manifest.version,mode:settings().mode,master_enabled:settings().masterEnabled!==false,night_reflection_enabled:settings().nightReflectionEnabled===true&&settings().mode==='active',reading_evidence_review:readingReview,note_evidence_review:noteReview,stats:runtime.store.stats(),archive:runtime.archive.stats(),native_preparation:{policy:nativePolicy.status(),coverage:runtime.externalGroupCoverage()},compatibility:compat.status(),integration,host_context:hostContext.status(),last_error:lastError,model:client.status(),model_asset_installed:existsSync(api.dataDir('assets','blue-maid-starry.glb')),atlas_url:BASE+'/',builtin_memory_running:api.has('memory')};}
   const evaluationService=new HostEvaluation(api,{runtime,monitor:hostContext,prompt,contextFor,allowedChat,sourceAllowed,signal:client.abort.signal,captureSnapshot:(name,args,text)=>coordinator.observe(name,args,text),
     productionObservation:()=>({mode:settings().mode,since:coordinationSince,prepared:runtime.store.sql("SELECT count(*) n,sum(CASE WHEN created>=? THEN 1 ELSE 0 END) recent FROM recalls WHERE json_extract(json,'$.evaluation.id') IS NULL AND json_extract(json,'$.request_inclusion') IN ('returned_from_module_prompt_hook','observed_at_dsh_llm_boundary')").get(coordinationSince),receipts:runtime.store.sql("SELECT count(*) n FROM recalls r,json_each(r.json,'$.host_receipts') h WHERE json_extract(r.json,'$.evaluation.id') IS NULL AND coalesce(json_extract(h.value,'$.isolated_evaluation'),0)!=1").get().n,actual_use:'not_independently_observable'}),
     loadRecall:id=>{const row=runtime.store.sql('SELECT json FROM recalls WHERE id=?').get(id);return row?JSON.parse(row.json):null;},latestRecall:scope=>runtime.store.recalls(scope,1)[0]});
@@ -344,6 +344,7 @@ export async function startThinkstar(api){
   registry.set(file,exports);
   try{
     if(available()&&settings().mode==='active')try{const review=runtime.selfReflection.reviewReadEvidence({limit:100});readingReview={status:review.status,scanned:review.scanned,updated_rows:review.updated_rows,updated_actions:review.updated_actions,has_more:review.has_more};}catch(error){noteError(error);}
+    if(available()&&settings().mode==='active')try{const review=runtime.selfReflection.reviewMissingNoteEvidence({limit:100});noteReview={status:review.status,scanned:review.scanned,updated_rows:review.updated_rows,updated_actions:review.updated_actions,has_more:review.has_more};}catch(error){noteError(error);}
     api.onDispose(()=>exports.dispose());
     hostContext.start();
     stopActivity=observeHostActivity(api,{runtime,active:()=>available(),allowedChat,persona});
