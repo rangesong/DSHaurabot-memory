@@ -54,7 +54,7 @@ export async function updateNativeChat({root,host,data,transforms,apply=false,cl
  const seen=new Set();
  for(const change of transforms){
   const key=change.area+'/'+change.path;
-  need(['host/src/chat/hub.js','modules/memory/index.mjs','modules/memory/context-review.js','host/src/autotelic/runtime.js','host/src/autotelic/reflect.js','host/src/core/backup.js','host/src/core/backup-push.js','host/src/core/backup-zip64.js','host/src/host.js'].includes(key)&&!seen.has(key),'Unreviewed or duplicate native repair target');seen.add(key);
+  need(['host/src/chat/hub.js','modules/memory/index.mjs','modules/memory/context-review.js','modules/memory/memory.js','host/client/client.js','host/src/autotelic/runtime.js','host/src/autotelic/reflect.js','host/src/core/backup.js','host/src/core/backup-push.js','host/src/core/backup-zip64.js','host/src/host.js'].includes(key)&&!seen.has(key),'Unreviewed or duplicate native repair target');seen.add(key);
   const before=entries.get(key),next=change.transform(before?.toString('utf8')??null,{version:snapshot.version});
   need(typeof next==='string'&&next.length>0,'Native transform produced no code');
   const syntax=spawnSync(process.execPath,['--check','--input-type=module'],{input:next,encoding:'utf8',windowsHide:true});

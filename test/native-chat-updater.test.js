@@ -66,3 +66,19 @@ test('host becomes busy during recovery verification so native update leaves ins
  await assert.rejects(updateNativeChat({...f,apply:true,client:client(),validateHost:async()=>{throw Error('synthetic host busy');}}),/host busy/);
  assert.match(fs.readFileSync(path.join(f.host,'src/chat/hub.js'),'utf8'),/value = 1/);
 });
+
+test('profile lifecycle destinations use verified native restoration without touching private memory',async()=>{
+ const f=fixture('native-profiles');
+ fs.mkdirSync(path.join(f.host,'client'),{recursive:true});
+ fs.writeFileSync(path.join(f.host,'client/client.js'),'export const panel = 1;\n');
+ fs.writeFileSync(path.join(f.data,'modules/memory/memory.js'),'export const portrait = 1;\n');
+ fs.writeFileSync(path.join(f.data,'memory.sqlite'),'synthetic private database stays untouched');
+ const transforms=[{area:'modules',path:'memory/memory.js',transform:s=>s.replace('portrait = 1','portrait = 2')},
+  {area:'host',path:'client/client.js',transform:s=>s.replace('panel = 1','panel = 2')}];
+ const r=await updateNativeChat({...f,transforms,apply:true,client:client()});
+ assert.equal(r.changes.length,2);assert.equal(r.public_download_verified,true);assert.equal(r.code_restoration_verified,true);
+ assert.match(fs.readFileSync(path.join(f.data,'modules/memory/memory.js'),'utf8'),/portrait = 2/);
+ assert.match(fs.readFileSync(path.join(f.host,'client/client.js'),'utf8'),/panel = 2/);
+ assert.equal(fs.readFileSync(path.join(f.data,'memory.sqlite'),'utf8'),'synthetic private database stays untouched');
+ assert.ok(!fs.existsSync(path.join(r.backup,'modules/memory.sqlite')));
+});
