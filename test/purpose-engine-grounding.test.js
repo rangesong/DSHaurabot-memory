@@ -44,6 +44,13 @@ test('purpose engine patch strictly gates version, baseline and patched bytes', 
   assert.throws(() => patchPurposeEngine(once.source + '\n', { version: PURPOSE_ENGINE_PATCH.version }), /hash/);
 });
 
+test('legacy candidate display evidence is not an evidence array and remains unverified',active,()=>{
+  const selected={id:'g-legacy',text:'想起之前装的插件',evidence:'主人以前装过插件',need:'share',kind:'share',provenance:{kind:'legacy-unverified'}};
+  const prompt=engine.buildPurposePrompt({now,selected,candidates:[selected],materials:[],pending:[]});
+  assert.ok(prompt.includes('legacy-unverified'));
+  assert.equal(helpers.candidateProvenance(selected).refs.length,0);
+});
+
 test('old recalled memories remain selectable without being labelled as happening now', active, () => {
   const result = engine.collectMaterials({ now, memoryRecords: [memory()] });
   assert.equal(result.items.length, 1);

@@ -102,7 +102,8 @@ export function restorePurposeState(state, raw, now = Date.now()) {
 
 function evidenceProvenance(goal) {
   if (plain(goal?.provenance) && goal.provenance.kind !== 'legacy-unverified') return normalizeProvenance(goal.provenance);
-  const evidence = (goal?.evidence || []).map(e => normalizeProvenance(e.provenance));
+  // Host candidates expose a display string here; only goal records have evidence arrays.
+  const evidence = (Array.isArray(goal?.evidence) ? goal.evidence : []).map(e => normalizeProvenance(e.provenance));
   const refs = evidence.flatMap(p => p.refs);
   if (refs.length) return normalizeProvenance({ ...evidence[0], refs });
   return normalizeProvenance(goal?.provenance, goal?.source === 'persona' ? 'self-intent' : 'legacy-unverified');
