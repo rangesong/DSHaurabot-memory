@@ -62,3 +62,13 @@ test('legacy normalization leaves window, quotas, original tool receipts and del
  assert.deepEqual(f.l.contextWindow,JSON.parse(prior).window);assert.deepEqual(f.l.days,JSON.parse(prior).days);assert.deepEqual(f.l.journal,JSON.parse(prior).journal);assert.deepEqual(f.l.outbox,JSON.parse(prior).outbox);
  assert.equal(f.l.plans[0].status,'blocked');assert.equal(f.l.journal[0].status,'uncertain');
 });
+test('unavailable or repeatedly invalid background definitions end locally without timeout recovery or QQ',async()=>{
+ const f=fixture();let cancelled=0;
+ const task={id:'owner-task',revision:1,status:'active',phase:'needs_definition',kind:'work-items',instruction:'处理鱼的世界班内待办',owner:'owner',persona:'fish',createdAt:now,updatedAt:now,nextAt:now,steps:[],completedSteps:[],receipts:[],history:[],checks:0};f.l.ownerTasks=[task];
+ const e=new LifeEngine({bridge:{data:f.data,change:fn=>fn(f.data)},host:{idle:async()=>true,cancel:async()=>{cancelled++;},send:async()=>assert.fail('No QQ from definition checks')},clock:()=>now,identity:()=>({owner:'owner',persona:'fish'})});
+ e.l.round={...f.round,kind:'owner-task',ownerTaskId:task.id,definitionOnly:true,status:'running',revision:e.l.revision,observation:'fixture current state',events:[],planIds:[],calls:0};
+ const input={id:task.id,expectedRevision:task.revision,steps:[{tool:'world_do',arguments:'{"id":"work"}',nextStep:'incorrectly take another shift'}]};
+ let result=e.defineTask(input,{sessionId:'s'});if(result.retryable)result=e.defineTask(input,{sessionId:'s'});
+ assert.equal(result.retryable,false);assert.equal(e.l.round.status,'finished');assert.equal(e.l.round.report.share,'');
+ await new Promise(resolve=>setTimeout(resolve,1));await e.tick();assert.equal(e.l.round,null);assert.equal(e.l.journal.at(-1).status,'completed');assert.equal(e.l.recovery,false);assert.equal(e.l.failureBackoff.streak,0);assert.equal(cancelled,1);assert.equal(e.l.ownerTasks[0].status,'active');
+});

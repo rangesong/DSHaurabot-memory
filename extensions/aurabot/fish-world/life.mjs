@@ -1,5 +1,5 @@
 import {isExactFishIdentity} from './action-sequence.mjs';
-import {rememberOwnerTurn,taskForExecution,ownerTaskGuard,noteOwnerTaskResult,advanceOwnerTasks,endOwnerTaskRound,worldToolName,reconcileOwnerTasks} from './owner-tasks.mjs';
+import {rememberOwnerTurn,taskForExecution,ownerTaskGuard,noteOwnerTaskResult,advanceOwnerTasks,endOwnerTaskRound,worldToolName,reconcileOwnerTasks,defineOwnerTask} from './owner-tasks.mjs';
 import {completedWindowRound,bindWindow,buildTaskPrompt} from './world-window.mjs';
 import {advancePlans,preparePlanChanges,applyPlanChanges,finishPlanCheck,planEvidenceFingerprint} from './plans.mjs';
 import {candidates,admission,reserveRound,effectiveNow,quotaAlert,closeOldAlerts,isQuotaDelivery,observeSatisfiedEvents,estimateTokens} from './governance.mjs';
@@ -194,8 +194,9 @@ export class LifeEngine {
     void Promise.resolve().then(()=>this.host.run(prepared.prompt||prompt,prepared)).then(async()=>{
       if(this.l.round?.id!==roundId)return;
       if(await this.host.idle(this.l.round.sessionId))this.end(true);else this.change(l=>{if(l.round?.id===roundId)l.round.status='finished';});
-    }).catch(()=>{
+    }).catch(async()=>{
       if(this.l.round?.id!==roundId)return;
+      if(this.l.round.localCompletion){if(await this.host.idle(this.l.round.sessionId))this.end(true);else this.change(l=>{if(l.round?.id===roundId)l.round.status='finished';});return;}
       this.change(l=>{l.round.status='stopping';l.round.stopReason='宿主回合失败，等待旧 Agent 停止';l.backoffUntil=this.clock()+300000;l.recovery=true;});
       void this.host.cancel(this.l.round.sessionId).catch(()=>{});this.fault('host','世界通道刚才未确认完成，已停下核对。');
     });
@@ -213,6 +214,26 @@ export class LifeEngine {
     round?.definitionOnly?(round.kind==='plan-definition'?'本轮只修复最多六条缺触发条件的旧计划：先按需查当前现场及原始历史，已完成或过时的事项用真实证据结清；仍有效才用 fish_life_finish planChanges.update 保存准确 nextAt/合法 waitCondition、status=pending、expectedRevision 与本轮 evidenceIds。不能把旧日程直接改成现在执行，不能重做历史动作，不能提交世界变更或向QQ补报历史。':'本轮只定义主人任务：先核对现场，再用 fish_life_task 保存完整后续步骤与准确时间，不能提交世界变更。原要求需未来执行时保存未来 nextAt，定义完成后正常结束，由后续到期回合执行。'):'',
     round?.planningOnly?'本轮完成本地每日规划义务：只查现场、用 fish_life_finish 创建或更新对应业务日期的可执行日程，明确 businessAt/windowStart/windowEnd、nextAt 或结构化等待条件。不能用世界动作冒充规划完成，不修改原分享证据要求，不补发旧日程。':'',
     round?.availabilityOnly?'本轮仅复查先前已明确满员的岗位：真实 world_now 核对可用位置，正常保存核对结果并结束；不在此轮重新接班。若已空位，程序会按原任务安排后续执行，未知旧动作仍不重做。':''].filter(Boolean).join('\n\n');}
+
+  defineTask(input,{sessionId}={}){
+    const r=this.l.round;if(!r||r.sessionId!==sessionId||r.status!=='running')throw Error('不是当前有效后台定义回合');
+    if(this.lock)return {ok:false,retryable:true,message:'等待当前世界读取返回后再定义，不并发猜步骤。'};
+    try{return this.change(l=>defineOwnerTask(l,input,{sessionId,background:true,taskId:l.round?.ownerTaskId,now:this.clock(),data:this.bridge.data}));}
+    catch(error){
+      if(!r.definitionOnly)throw error;
+      const failures=(r.taskDefinitionErrors||0)+1,stop=error.wait===true||error.retryable===false||failures>=2;
+      this.change(l=>{
+        const current=l.round;current.taskDefinitionErrors=failures;
+        if(stop){
+          current.localCompletion={kind:'definition-held',reason:clean(error.message),at:this.clock()};
+          current.report={summary:'主人任务定义暂存：'+clean(error.message)+'；原始要求保留，未提交世界变更。',events:l.queue.filter(q=>current.events.includes(q.id)).map(q=>({id:q.id,status:'blocked'})),planChanges:[],importance:'routine',facts:[],share:''};
+          current.status='finished';
+        }
+      });
+      if(stop)setTimeout(()=>{if(this.l.round?.id===r.id)void Promise.resolve().then(()=>this.host.cancel(sessionId)).catch(()=>{});},0);
+      return {ok:false,retryable:!stop,waiting:stop,message:clean(error.message)+(stop?'；本轮已在本地正常收尾，不再尝试登记或重新接班，原要求等待真实选项。':'；仅允许再纠正一次准确参数，不换说法反复尝试。')};
+    }
+  }
 
   bind(sessionId,names){
     if(!worldNames.every(n=>names.includes(n)))throw Error('后台实际可见世界工具不完整');

@@ -19,7 +19,7 @@ function commit(f,r,plan){f.l.plans.push(plan);f.l.planHistory.push({at:f.now,ro
 
 test('an in-shift request becomes a definition of real task items rather than taking another work shift',()=>{
  const f=fixture(),task=f.turn('打工的地方有工作让你处理');assert.equal(task.kind,'work-items');assert.equal(task.phase,'needs_definition');assert.equal(task.finalAction,null);assert.deepEqual(task.steps,[]);
- const r=f.round(task,{definitionOnly:true});assert.equal(ownerTaskCandidates(f.l,f.now,f.data)[0].definitionOnly,true);
+ assert.equal(ownerTaskCandidates(f.l,f.now,f.data).length,0);f.data.now='· task-17 处理传菜 0 贝';f.data.at.now=f.now;const r=f.round(task,{definitionOnly:true});assert.equal(ownerTaskCandidates(f.l,f.now,f.data)[0].definitionOnly,true);
  assert.match(ownerTaskGuard(f.l,f.data,f.exec('do',{id:'work'}),true,f.now),/只登记/);
  assert.throws(()=>define(f,task,[workStep('work')]),/真实 task/);
  f.observe(task,'now',{},'合成现场\n· task-17 处理传菜 0 贝\n· task-18 收拾桌子 0 贝');
@@ -27,6 +27,18 @@ test('an in-shift request becomes a definition of real task items rather than ta
  define(f,task,[workStep('task-17'),workStep('task-18')]);assert.equal(task.finalAction.arguments.id,'task-17');
  assert.match(ownerTaskGuard(f.l,f.data,f.exec('do',{id:'task-17'}),true,f.now),/只登记/,'a definition-only turn stays local after definition');
  assert.equal(r.id,f.l.round.id);const other=f.turn('你出门打个工去');assert.equal(other.kind,'work');assert.equal(other.finalAction.arguments.id,'work');
+});
+
+test('work-item definitions wait locally until a fresh real choice exists, without treating state or old notices as options',()=>{
+ const f=fixture(),task=f.turn('打工的地方有工作让你处理'),before=structuredClone(task),choices=()=>ownerTaskCandidates(f.l,f.now,f.data);
+ f.data.state.doing=null;assert.deepEqual(choices(),[]);f.data.state.doing={name:'正在上班'};assert.deepEqual(choices(),[],'state freshness alone is not an action choice');
+ f.data.now='· task-17 处理传菜 0 贝';f.data.at.now=f.now-180001;assert.deepEqual(choices(),[]);f.data.at.now=f.now+1;assert.deepEqual(choices(),[]);
+ f.data.at.now=f.now;f.data.errors={now:'读取失败'};assert.deepEqual(choices(),[]);delete f.data.errors.now;f.data.now='> · task-17 引用里的旧事项';assert.deepEqual(choices(),[]);
+ f.data.now='当前无班内待办';const event={id:'synthetic-work',kind:'work',status:'pending',t:f.now-1,receivedAt:f.now,notBefore:f.now,provenance:{trusted:true,source:'world-notify'},text:'· task-17 处理传菜 0 贝'};f.l.queue.push(event);assert.deepEqual(choices(),[],'newer empty now supersedes an older notification');
+ f.data.at.now=f.now-1000;assert.equal(choices()[0].definitionOnly,true);for(const change of [{status:'completed'},{kind:'talk'},{provenance:{trusted:false,source:'world-notify'}},{provenance:{trusted:true,source:'owner-control'}},{t:f.now-180001},{receivedAt:f.now-180001},{receivedAt:f.now+1},{notBefore:f.now+1},{text:'有班内工作等你处理，请先 world_now 查看'}]){const saved=structuredClone(event);Object.assign(event,change);assert.deepEqual(choices(),[],JSON.stringify(change));Object.assign(event,saved);}
+ f.l.queue=[];f.data.now='· task-17 处理传菜 0 贝';f.data.at.now=f.now;assert.equal(choices()[0].definitionOnly,true);assert.deepEqual(task,before,'waiting and candidate inspection preserve the original request');
+ f.round(task,{definitionOnly:true});f.observe(task,'now',{},'· task-17 处理传菜 0 贝');f.observe(task,'now',{},'当前无班内待办');assert.throws(()=>define(f,task,[workStep('work')]),error=>error.code==='OWNER_WORK_ITEMS_WAIT'&&error.wait===true&&error.retryable===false);assert.deepEqual(task,before,'a no-options rejection does not turn a work-item request into another shift');
+ f.observe(task,'now',{},'· task-17 处理传菜 0 贝');assert.throws(()=>define(f,task,[workStep('work')]),error=>error.code==='OWNER_WORK_ITEMS_INVALID_ACTION'&&error.retryable===false);define(f,task,[workStep('task-17')]);assert.equal(task.finalAction.arguments.id,'task-17');
 });
 
 test('ordinary descriptions questions and quotations do not become new planning or work-item tasks',()=>{

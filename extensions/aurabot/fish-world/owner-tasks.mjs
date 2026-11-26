@@ -15,6 +15,16 @@ const workItems=text=>/(?:班上|班内|正在上班|已经上班|(?:打工|工�
 const dailyPlanning=text=>/(?:每天|每晚|每日)/.test(text)&&/23\s*[:：]\s*45|(?:二十三|23)点(?:四十五|45)/.test(text)&&/计划|规划|想好|安排/.test(text)&&/明天|次日|第二天/.test(text);
 const isMutation=(tool,args={})=>['go','do','say','update'].some(name=>tool===WORLD+name)||tool===WORLD+'friends'&&args.action!=='list';
 const uncertainTask=(l,task)=>task.phase==='uncertain'||(l.journal||[]).some(row=>row.ownerTaskId===task.id&&(['executing','uncertain'].includes(row.status)||row.status==='failed'&&isMutation(row.tool,parse(row.args)||{})&&!/\[E_RULE\]/.test(row.result||'')));
+const taskOptions=text=>new Set([...String(text||'').matchAll(/^[ \t]*·[ \t]+(task-\d+)[ \t]+\S[^\r\n]*/gm)].map(match=>match[1]));
+const fresh=(at,now)=>Number.isFinite(at)&&at>0&&at<=now&&at>=now-180000;
+function currentWorkItems(l,data,now){
+ const cachedAt=Number(data.at?.now)||0,cached=fresh(cachedAt,now)&&!data.errors?.now;
+ if(cached&&taskOptions(data.now).size)return true;
+ // A notification may wake a local definition only when it carries real current choices.
+ // A later successful now snapshot without choices supersedes an older notification.
+ return (l.queue||[]).some(event=>event.kind==='work'&&event.status==='pending'&&event.provenance?.trusted===true&&event.provenance.source==='world-notify'&&fresh(event.t,now)&&fresh(event.receivedAt,now)&&(event.notBefore||0)<=now&&(!cached||event.t>cachedAt)&&taskOptions(event.text).size>0);
+}
+function workItemDefinitionError(message,code,wait=false){return Object.assign(Error(message),{code,retryable:false,...wait?{wait:true}:{}});}
 function planningState(task,now){
  if(task.planning)return task.planning;
  const first=day(task.createdAt||now),today=day(now),latest=now>=planningAt(today)?today:shiftDay(today,-1),instance=latest<first?first:latest;
@@ -125,8 +135,9 @@ export function defineOwnerTask(l,input,{sessionId,background=false,taskId,now})
  });
  if(task.kind==='work'&&!task.completedSteps.some(s=>s.action.tool===WORLD+'do'&&s.action.arguments.id==='work')&&!steps.some(s=>s.tool===WORLD+'do'&&s.arguments.id==='work'))throw Error('打工任务必须包含 world_do(id=work)，吃饭或到达不能替代');
  if(task.kind==='work-items'){
-  const offered=new Set((l.journal||[]).filter(row=>row.tool===WORLD+'now'&&row.status==='confirmed'&&!row.isError&&row.sessionId===sessionId&&row.at>=now-180000&&(!background||row.round===l.round?.id)).flatMap(row=>[...(row.result||'').matchAll(/^·\s+(task-\d+)\s+/gm)].map(match=>match[1])));
-  if(!steps.some(step=>step.tool===WORLD+'do'&&/^task-\d+$/.test(step.arguments.id||''))||steps.some(step=>step.tool===WORLD+'do'&&(!/^task-\d+$/.test(step.arguments.id||'')||!offered.has(step.arguments.id))))throw Error('班内工作必须从当前 world_now 的真实 task-* 选项定义，不能替换为重新接班');
+  const current=(l.journal||[]).findLast(row=>row.tool===WORLD+'now'&&row.status==='confirmed'&&!row.isError&&row.sessionId===sessionId&&fresh(row.finishedAt||row.at,now)&&(!background||row.round===l.round?.id)),offered=taskOptions(current?.result);
+  if(!offered.size)throw workItemDefinitionError('当前没有可核对的真实 task-* 班内选项；保留原请求等待，不要改成 work 重新上班或改参数重试，请正常结束本轮','OWNER_WORK_ITEMS_WAIT',true);
+  if(!steps.some(step=>step.tool===WORLD+'do'&&/^task-\d+$/.test(step.arguments.id||''))||steps.some(step=>step.tool===WORLD+'do'&&(!/^task-\d+$/.test(step.arguments.id||'')||!offered.has(step.arguments.id))))throw workItemDefinitionError('班内工作必须从当前 world_now 的真实 task-* 选项定义，不能替换为重新接班；本轮不要改参数猜测，请正常结束','OWNER_WORK_ITEMS_INVALID_ACTION');
  }
  if(input.nextAt!==undefined&&(!Number.isFinite(input.nextAt)||input.nextAt<now))throw Error('nextAt 需要未来的13位毫秒时间');
  if(steps.some(s=>task.completedSteps.some(done=>done.action.tool===s.tool&&matches(s.arguments,done.action.arguments))))throw Error('已完成步骤不能重新登记；只细化尚未完成的后续步骤');
@@ -212,7 +223,7 @@ export function advanceOwnerTasks(l,data,now){
   task.phase='ready';task.nextAt=now;task.arrivalState={at,placeId:task.destination.id};if(task.travelCompletesStep)finishStep(task,{stateAt:at,callId:task.travelCallId},now);record(task,{kind:'arrived-state',stateAt:at,purposeStillPending:open(task)},now);
  }
 }
-export function ownerTaskCandidates(l,now,data={}){return (l.ownerTasks||[]).filter(t=>open(t)&&sameScope(l,t)&&!uncertainTask(l,t)&&(t.phase==='needs_definition'&&(t.definitionAttempts||0)<3&&(t.definitionNextAt||0)<=now&&(!t.lastCheckedAt||now-t.lastCheckedAt>=600000)||(['pending','ready'].includes(t.phase)||t.phase==='blocked'&&t.availability?.checkOnly)&&t.nextAt>0&&t.nextAt<=now)&&(!t.optional||!data.state?.doing&&data.state?.where?.kind!=='trip'&&!(l.ownerTasks||[]).some(other=>other.id!==t.id&&open(other)&&['travelling','working','waiting_event'].includes(other.phase))))
+export function ownerTaskCandidates(l,now,data={}){return (l.ownerTasks||[]).filter(t=>open(t)&&sameScope(l,t)&&!uncertainTask(l,t)&&(t.phase==='needs_definition'&&(t.kind!=='work-items'||currentWorkItems(l,data,now))&&(t.definitionAttempts||0)<3&&(t.definitionNextAt||0)<=now&&(!t.lastCheckedAt||now-t.lastCheckedAt>=600000)||(['pending','ready'].includes(t.phase)||t.phase==='blocked'&&t.availability?.checkOnly)&&t.nextAt>0&&t.nextAt<=now)&&(!t.optional||!data.state?.doing&&data.state?.where?.kind!=='trip'&&!(l.ownerTasks||[]).some(other=>other.id!==t.id&&open(other)&&['travelling','working','waiting_event'].includes(other.phase))))
  .sort((a,b)=>b.createdAt-a.createdAt).map(t=>({id:t.id,kind:'owner-task',ownerTaskId:t.id,optional:t.optional,priority:t.priority??0,bucket:['work','work-items'].includes(t.kind)?'work':'idle',definitionOnly:t.phase==='needs_definition',planningOnly:t.kind==='planning',readOnly:!!t.availability?.checkOnly,text:t.instruction,group:(l.queue||[]).filter(q=>q.ownerTaskIds?.includes(t.id)&&['pending','blocked'].includes(q.status))}));}
 export function ownerTaskSnapshot(l,round){
  const tasks=(l.ownerTasks||[]).filter(t=>open(t)&&sameScope(l,t)&&(!round?.ownerTaskId||t.id===round.ownerTaskId)).sort((a,b)=>b.createdAt-a.createdAt).slice(0,3);
