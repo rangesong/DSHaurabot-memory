@@ -31,11 +31,13 @@ export async function archiveContextModule(folder,id,{root,client}={}){
  const run=createTestWorkspace(root,{label:'code-restoration-'+id});let cleanup;try{const dest=path.join(run.scratch,id);fs.mkdirSync(dest);for(const [n,b]of readZipEntries(downloaded))fs.writeFileSync(path.join(dest,n),b,{flag:'wx'});if(snapshotContextModule(dest,id).tree!==snapshot.tree)throw Error('Restored disk hashes differ');}finally{cleanup=cleanupTestWorkspace(root,run.folder);fs.writeFileSync(path.join(run.report,'summary.json'),JSON.stringify({kind:'code-restoration',id,public_download_verified:true,tree:snapshot.tree,cleanup},null,2));}
  return {id,version:snapshot.version,tree:snapshot.tree,release_url:release.html_url,tag,zip_asset:archive.name,manifest_asset:meta.name,public_download_verified:true,code_restoration_verified:true,private_data_included:false,verificationReport:run.report,cleanup};
 }
-export async function updateContextModule({root,data,id,apply=false,client}={}){
+export async function updateContextModule({root,data,id,apply=false,client,validateHost}={}){
  if(!ids.has(id))throw Error('Unsupported extension');root=checkedPath(root,root);data=checkedPath(data,data);const version=JSON.parse(fs.readFileSync(path.join(root,'extensions/aurabot',id,'module.json'))).version;const target=checkedPath(data,path.join(data,'modules',id)),source=checkedPath(root,path.join(root,'dist/aurabot/context',id+'-'+version));const old=snapshotContextModule(target,id),next=snapshotContextModule(source,id);
  const summary={id,from:old.version,to:next.version,oldTree:old.tree,nextTree:next.tree,configuration_modified:false,private_data_modified:false};if(!apply)return summary;if(old.tree===next.tree)return {...summary,unchanged:true};
  const policy=JSON.parse(fs.readFileSync(path.join(root,'release/backup-policy.json')));if(policy.include_private_data!==false||policy.verify_public_download!==true||policy.verify_disk_restoration!==true)throw Error('Verified backup policy required');client??=new GitHubClient(policy.repository,{token:githubCredential(policy.repository)});
+ await validateHost?.();
  const backup=await archiveContextModule(target,id,{root,client});if(backup.tree!==old.tree)throw Error('Cloud backup mismatch');
+ await validateHost?.();
  const stageRoot=checkedPath(data,path.join(data,'modules-data',id,'update-staging'));fs.mkdirSync(stageRoot,{recursive:true});const uid=randomUUID(),stage=checkedPath(data,path.join(stageRoot,'stage-'+uid)),previous=checkedPath(data,path.join(stageRoot,'rollback-'+uid));
  fs.mkdirSync(stage);for(const [n,b]of next.entries)fs.writeFileSync(path.join(stage,n),b,{flag:'wx'});if(snapshotContextModule(stage,id).tree!==next.tree)throw Error('Staged code mismatch');
  // Recheck live program immediately before moving it. Runtime databases are outside target.
