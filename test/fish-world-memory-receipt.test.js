@@ -33,3 +33,16 @@ test('Beijing date keys preserve midnight leap-day and year boundaries across nu
  const cases=[['2026-11-21T15:59:59.999Z','2026-11-21'],['2026-11-21T16:00:00Z','2026-11-22'],['2024-02-28T16:00:00Z','2024-02-29'],['2024-02-29T16:00:00Z','2024-03-01'],['2026-12-31T16:00:00Z','2027-01-01']];
  for(const [value,expected]of cases){assert.equal(dayKey(Date.parse(value)),expected);assert.equal(dayKey(new Date(value)),expected);}
 });
+
+test('only a valid completed life round publishes derived peer impressions and an index error cannot change its outcome',()=>{
+ for(const [completed,throws] of [[true,false],[true,true],[false,false]]){
+  const f=fixture(async()=>({ok:true}));let calls=0;
+  f.e.host.recordPeople=round=>{calls++;assert.equal(round.id,'peer-round');assert.equal(f.e.l.round,null);if(throws)throw Error('synthetic people storage failure');};
+  f.e.l.round={id:'peer-round',kind:'idle',status:'running',events:[],receipts:[],observation:'合成已确认观察',startedAt:start};
+  f.e.finish({events:[],plans:[],importance:'routine',summary:'合成有效结果',facts:[],share:'',peerImpressions:[{fish:'#200',text:'合成相处印象',sourceIds:[]}]});
+  assert.doesNotThrow(()=>f.e.end(completed));
+  assert.equal(calls,completed?1:0);
+  assert.equal(f.e.l.journal.find(row=>row.id==='peer-round').status,completed?'completed':'uncertain');
+  assert.equal(f.e.l.outbox.length,0);
+ }
+});

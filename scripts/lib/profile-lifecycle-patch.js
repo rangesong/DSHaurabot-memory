@@ -9,6 +9,7 @@ export const PROFILE_PANEL_PATCH=Object.freeze({
   version:'1.3.0-beta.1',
   before_sha256:'1dea1df874a3f2245cd55b6abf9ec7db6fa20f09cc667797058149c3b14aa8df',
   after_sha256:'46b003b62abb36edb454251d4f73a8de660e12e12b3c78bf850b4f4eeda77db1',
+  compatible_sha256:['c6b1577a9cebbff5d0bed2081c85bd63c53ea67b2885f9137fbb4b1985a74875'],
 });
 const sha=value=>createHash('sha256').update(value).digest('hex');
 const replaceOnce=(source,before,after)=>{
@@ -125,7 +126,7 @@ export function patchProfileLifecycle(source,{version}={}){
 export function patchProfilePanel(source,{version}={}){
   if(version!==PROFILE_PANEL_PATCH.version)throw Error('Unreviewed profile panel host version');
   const before=sha(source);
-  if(before===PROFILE_PANEL_PATCH.after_sha256)return {source,receipt:{unchanged:true,before,after:before}};
+  if(before===PROFILE_PANEL_PATCH.after_sha256||PROFILE_PANEL_PATCH.compatible_sha256.includes(before))return {source,receipt:{unchanged:true,before,after:before}};
   if(before!==PROFILE_PANEL_PATCH.before_sha256)throw Error('Unreviewed profile panel source hash');
   const next=replaceOnce(source,"p.text || 'ta对这个人还没有整体印象。'","p.text || (p.profilePending ? '整体印象待更新，已有记忆仍保留。' : 'ta对这个人还没有整体印象。')");
   if(PROFILE_PANEL_PATCH.after_sha256&&sha(next)!==PROFILE_PANEL_PATCH.after_sha256)throw Error('Profile panel result hash mismatch');

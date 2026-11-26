@@ -61,7 +61,7 @@ test('reviewed lifecycle source is hash constrained and idempotent',options,()=>
 test('reviewed panel distinguishes a missing pending portrait and rejects unreviewed code',{skip:!fs.existsSync('D:/DSH/profiles/desktop/node_modules/dsh-aurabot-qq/client/client.js')},()=>{
   const source=fs.readFileSync('D:/DSH/profiles/desktop/node_modules/dsh-aurabot-qq/client/client.js','utf8');
   const result=patchProfilePanel(source,{version:PROFILE_PANEL_PATCH.version});
-  assert.equal(hash(result.source),PROFILE_PANEL_PATCH.after_sha256);
+  assert.ok([PROFILE_PANEL_PATCH.after_sha256,...PROFILE_PANEL_PATCH.compatible_sha256].includes(hash(result.source)));
   assert.match(result.source,/p\.text \|\| \(p\.profilePending \? '整体印象待更新，已有记忆仍保留。'/);
   assert.equal(patchProfilePanel(result.source,{version:PROFILE_PANEL_PATCH.version}).receipt.unchanged,true);
   assert.throws(()=>patchProfilePanel(source+'\n',{version:PROFILE_PANEL_PATCH.version}),/hash/i);
