@@ -27,6 +27,9 @@ export function candidates(l,data,cfg,now){
   for(const p of l.plans.filter(p=>['pending','active'].includes(p.status)&&p.nextAt>0&&p.nextAt<=now).sort((a,b)=>a.nextAt-b.nextAt||a.id.localeCompare(b.id))){
     list.push({id:p.id,kind:'plan',planId:p.id,planRevision:p.revision,plan:p,...taskClass({kind:'plan',plan:p},l),sourceEventIds:p.sourceEventIds||[],text:JSON.stringify(p),group:[]});
   }
+  const definitions=l.plans.filter(p=>p.status==='blocked'&&p.scheduleIssue?.code==='trigger-needs-definition'&&(p.definitionChecks||0)<2&&!(p.nextDefinitionAt>now)&&!/(?:每天|每晚|每日).{0,30}(?:规划|计划|安排)/.test(p.goal||''));
+  if(definitions.length){const group=definitions.slice(0,6).map(p=>({id:p.id,kind:'plan-definition',text:p.goal,relatedPlanIds:[p.id]})),p=definitions[0];
+    list.push({id:p.id,kind:'plan-definition',planId:p.id,planRevision:p.revision,plan:p,priority:3,bucket:'idle',t:now,definitionOnly:true,text:p.goal,group});}
   const doing=data.state?.doing,end=Date.parse(doing?.until||doing?.endAt||data.state?.where?.arrive||'')||Number(doing?.endAt)||0;
   const long=!!doing||data.state?.figure?.asleep||data.state?.where?.kind==='trip';
   if(cfg.idleEnabled&&!working&&now>=l.nextIdle&&(!long||end>0&&end<=now))list.push({id:'idle',kind:'idle',priority:4,bucket:'idle',text:'照顾基本生活，允许保持现状并等待。',group:[]});
@@ -58,10 +61,10 @@ export function admission(l,task,cfg,{now,estimate,costSummary}={}){
   if(task.bucket==='social'&&now<(l.cooldowns[task.sender]||0))return blocked('同一发送者社交冷却中',l.cooldowns[task.sender]);
   if(task.planId){
     const p=l.plans.find(p=>p.id===task.planId);
-    if(!p||!planOpen(p.status)||!['pending','active'].includes(p.status))return blocked('计划不再可执行');
+    if(!p||!planOpen(p.status)||!(['pending','active'].includes(p.status)||task.kind==='plan-definition'&&p.status==='blocked'&&p.scheduleIssue?.code==='trigger-needs-definition'))return blocked('计划不再可执行');
     if(p.lastCheckedAt)next=Math.max(next,p.lastCheckedAt+cfg.planRecheckMinMs);
   }
-  if(task.ownerTaskId){const t=(l.ownerTasks||[]).find(t=>t.id===task.ownerTaskId);if(!t||t.status!=='active'||!['pending','ready'].includes(t.phase))return blocked('主人任务正在等待真实回执');if(t.lastCheckedAt)next=Math.max(next,t.lastCheckedAt+cfg.planRecheckMinMs);}
+  if(task.ownerTaskId){const t=(l.ownerTasks||[]).find(t=>t.id===task.ownerTaskId);if(!t||t.status!=='active'||!(['pending','ready'].includes(t.phase)||task.definitionOnly&&t.phase==='needs_definition'||task.readOnly&&t.phase==='blocked'&&t.availability?.checkOnly))return blocked('主人任务正在等待真实回执');if(t.lastCheckedAt)next=Math.max(next,t.lastCheckedAt+cfg.planRecheckMinMs);}
   if(now<next)return blocked(urgent?'紧急事件正在频率冷却':'普通回合或同一计划正在冷却',next);
   if(estimate){
     if(estimate.roundPromptTokens>cfg.roundPromptEstimatedTokenLimit)return blocked('本轮新增提示超过估算体积门槛');

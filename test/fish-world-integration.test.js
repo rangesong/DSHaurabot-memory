@@ -21,8 +21,8 @@ test('three hours of two-second local ticks make only configured idle starts, wi
  assert.equal(f.calls,6);assert.equal(f.e.l.scheduler.reservations.length,6);assert.equal(f.e.l.days['2026-11-21'].idle,6);
  for(let i=1;i<6;i++)assert.ok(f.e.l.scheduler.starts[i].at-f.e.l.scheduler.starts[i-1].at>=180000);
 });
-test('a due plan gets one no-progress round and then remains asleep through clock-only ticks',async()=>{
- const f=fixture({idleEnabled:true});const ops=preparePlanChanges(f.e.l,{plans:[{goal:'等到门口',reason:'安排',nextStep:'等通知',trigger:'arrive',nextAt:start,status:'pending'}]},{now:start,fishId:'fixture'});
+test('a due plan with a valid event condition gets one no-progress round and remains asleep through clock-only ticks',async()=>{
+ const f=fixture({idleEnabled:true});const ops=preparePlanChanges(f.e.l,{plans:[{goal:'等到门口',reason:'安排',nextStep:'等通知',trigger:'arrive',waitCondition:{kind:'event',eventKind:'arrive',subject:'fixture-place'},nextAt:start,status:'pending'}]},{now:start,fishId:'fixture'});
  applyPlanChanges(f.e.l,ops,{now:start});f.e.l.nextIdle=start+86400000;
  for(let n=0;n<10800000;n+=2000){f.time(start+n);await f.e.tick();await flush();}
  assert.equal(f.e.l.journal.filter(j=>j.type==='round'&&j.kind==='plan').length,1);assert.equal(f.e.l.plans[0].status,'waiting_event');

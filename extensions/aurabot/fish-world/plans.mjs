@@ -1,6 +1,8 @@
 import {findEquivalentPlan,equivalentPlans,refinementPatch,semanticPlan,constraintsOf} from './plan-semantics.mjs';
 import {createHash} from 'node:crypto';
 import {dayKey,timestamp,planOpen,planTerminal} from './state.mjs';
+import {inspectPlanTrigger,normalizePlanTriggers,nextPlanWait,matchesPlanEvent} from './plan-triggers.mjs';
+import {proofOfPlanProgress} from './plan-progress.mjs';
 
 const hash=x=>createHash('sha256').update(JSON.stringify(x)).digest('hex');
 const norm=x=>String(x??'').normalize('NFKC').replace(/\s+/g,' ').trim();
@@ -89,6 +91,9 @@ export function preparePlanChanges(l,input,{round={},now=Date.now(),fishId=''}={
     }else if(op==='update'){
       const patch=Object.fromEntries([...fields,'progress'].filter(k=>p[k]!==undefined).map(k=>[k,p[k]]));
       for(const k of ['nextAt','expiresAt'])if(k in patch)patch[k]=timestamp(patch[k]);
+      // Scheduling holds are repairable with this round's evidence. A business
+      // block still needs its original explicit status transition.
+      if(old.status==='blocked'&&old.scheduleIssue?.version===1&&patch.status===undefined&&evidenceIds.length&&['nextAt','waitCondition'].some(key=>key in patch)&&inspectPlanTrigger({...old,...patch,status:'pending'},draft,{now}).valid)patch.status='pending';
       for(const k of ['topic','subject','stage','businessAt','windowStart','windowEnd'])if(k in patch&&JSON.stringify(patch[k])!==JSON.stringify(old[k]))throw Error('计划身份字段不可变，请创建新阶段并明确替代');
       if(planTerminal(old.status)&&Object.entries(patch).some(([k,v])=>JSON.stringify(v)!==JSON.stringify(old[k])))throw Error('终态计划不能重新激活或改写');
       if(old.status==='needs_review'&&patch.status&&patch.status!=='needs_review'&&!(raw.reviewed===true&&round.kind==='owner'&&evidenceIds.length))throw Error('历史歧义计划需要主人明确核对');
@@ -110,10 +115,13 @@ export function preparePlanChanges(l,input,{round={},now=Date.now(),fishId=''}={
     applyPlanChanges(draft,[operation],{now,roundId:round.id,recordHistory:false});
     result.push(operation);
   }
-  return result;
+  return result.map(operation=>{
+    const issue=draft.plans.find(plan=>plan.id===operation.id)?.scheduleIssue;
+    return issue?{...operation,scheduleIssue:structuredClone(issue)}:operation;
+  });
 }
 export function applyPlanChanges(l,changes,options={}){
-  const draft={plans:structuredClone(l.plans),planHistory:structuredClone(l.planHistory||[]),planProposals:structuredClone(l.planProposals||[])};
+  const draft={plans:structuredClone(l.plans),queue:l.queue||[],journal:l.journal||[],planHistory:structuredClone(l.planHistory||[]),planProposals:structuredClone(l.planProposals||[])};
   applyPrepared(draft,changes,options);l.plans=draft.plans;l.planProposals=draft.planProposals;if(options.recordHistory!==false)l.planHistory=draft.planHistory;
 }
 function applyPrepared(l,changes,{now=Date.now(),roundId=null,recordHistory=true}={}){
@@ -127,7 +135,9 @@ function applyPrepared(l,changes,{now=Date.now(),roundId=null,recordHistory=true
     if(change.op==='existing'){if(!l.plans.some(p=>p.id===change.id&&p.revision===change.expectedRevision))throw Error('计划版本冲突');continue;}
     if(change.op==='create'){
       if(l.plans.some(p=>p.id===change.id||p.logicalKey===change.plan.logicalKey&&planOpen(p.status)))throw Error('计划身份在提交后发生变化');
-      l.plans.push(structuredClone(change.plan));
+      const created=structuredClone(change.plan);
+      normalizePlanTriggers({plans:[created],queue:l.queue,journal:l.journal},{now,bumpRevision:false});
+      l.plans.push(created);
       if(recordHistory)(l.planHistory??=[]).push({at:now,roundId,op:'create',id:change.id,toRevision:change.plan.revision,evidenceIds:change.evidenceIds});
       continue;
     }
@@ -146,7 +156,8 @@ function applyPrepared(l,changes,{now=Date.now(),roundId=null,recordHistory=true
       const target=l.plans.find(x=>x.id===change.targetId),previous=structuredClone(target);target.supersedes=unique([...(target.supersedes||[]),p.id]);target.revision++;target.updatedAt=now;
       if(recordHistory)(l.planHistory??=[]).push({at:now,roundId,op:'supersede-target',id:target.id,fromRevision:previous.revision,toRevision:target.revision,before:previous,evidenceIds:change.evidenceIds});
     }
-    const changed=fields.some(k=>JSON.stringify(before[k])!==JSON.stringify(p[k]))||p.progress!==before.progress||change.targetId;
+    normalizePlanTriggers({plans:[p],queue:l.queue,journal:l.journal},{now,bumpRevision:false});
+    const changed=fields.some(k=>JSON.stringify(before[k])!==JSON.stringify(p[k]))||p.progress!==before.progress||JSON.stringify(p.scheduleIssue)!==JSON.stringify(before.scheduleIssue)||change.targetId;
     if(changed){
       p.revision++;p.updatedAt=now;p.sourceEvidenceIds=unique([...(p.sourceEvidenceIds||[]),...(change.evidenceIds||[])]);
       if(recordHistory)(l.planHistory??=[]).push({at:now,roundId,op:change.op,id:p.id,fromRevision:before.revision,toRevision:p.revision,before,patch:structuredClone(patch),submittedPlan:change.submittedPlan,semanticReason:change.semanticReason,evidenceIds:change.evidenceIds});
@@ -157,7 +168,7 @@ export function planEvidenceFingerprint(data,plan){
   const s=data.state||{},where=s.where||{},doing=s.doing;
   const events=(data.life?.queue||[]).filter(q=>(plan.sourceEventIds||[]).includes(q.id)||plan.waitCondition?.eventId===q.id||(q.relatedPlanIds||[]).includes(plan.id));
   return hash({where:{kind:where.kind,id:where.place?.id||where.area?.id||where.to?.id,arrive:where.arrive},doing,
-    body:{ill:s.body?.ill,full:s.body?.full,energy:s.body?.energy},money:s.money,
+    body:{ill:s.body?.ill},
     events:events.map(q=>[q.id,q.eventVersion||1,q.status])});
 }
 export function advancePlans(l,data,now){
@@ -166,24 +177,46 @@ export function advancePlans(l,data,now){
     if(p.expiresAt&&now>=p.expiresAt){p.status='expired';p.revision++;p.updatedAt=now;continue;}
     if(p.status==='waiting_event'){
       const f=planEvidenceFingerprint(data,p),w=p.waitCondition||{};
-      const event=w.kind==='event'&&(l.queue||[]).some(q=>q.provenance?.trusted&&q.t>Math.max(p.lastCheckedAt||0,w.after||0)&&(w.eventId?q.id===w.eventId:(w.eventKinds||[w.eventKind]).includes(q.kind))&&(!w.subject||q.sender===w.subject)&&((p.sourceEventIds||[]).includes(q.id)||(q.relatedPlanIds||[]).includes(p.id)||w.eventId===q.id||w.trustedOnly===true&&/^.+#\d+$/.test(w.subject||'')&&w.subject===q.sender));
+      const event=w.kind==='event'&&(l.queue||[]).some(q=>matchesPlanEvent(p,q));
       const stage=w.kind==='time'&&w.at>0&&now>=w.at&&p.lastTimeWake!==w.at;
-      if(event||stage||w.kind==='state'&&f!==p.lastEvidenceFingerprint){
+      const stateFresh=Number(data.at?.state)>=(p.lastCheckedAt||0)&&Number(data.at?.state)<=now&&now-Number(data.at?.state)<=180000;
+      const busy=!!data.state?.doing||data.state?.where?.kind==='trip';
+      if(w.kind==='state'&&w.when==='idle'&&stateFresh&&busy)p.waitObservedBusy=true;
+      const afterReceipt=p.waitAfterReceiptAt>0&&Number(data.at?.state)>p.waitAfterReceiptAt;
+      const stateReady=w.kind==='state'&&(w.when==='idle'?stateFresh&&!busy&&(afterReceipt||p.waitObservedBusy||f!==p.lastEvidenceFingerprint):f!==p.lastEvidenceFingerprint);
+      if(event||stage||stateReady){
         p.status='pending';p.nextAt=now;p.revision++;p.updatedAt=now;p.lastWakeFingerprint=f;
+        delete p.waitObservedBusy;delete p.waitAfterReceiptAt;
         if(stage)p.lastTimeWake=w.at;
       }
     }
   }
 }
-export function finishPlanCheck(l,data,round,{now,hasMutation=false,unchangedLimit=1}={}){
+export function finishPlanCheck(l,data,round,{now=Date.now(),unchangedLimit=1}={}){
   if(!round.planId)return;
   const p=l.plans.find(p=>p.id===round.planId);if(!p||!planOpen(p.status)||['needs_review','blocked'].includes(p.status))return;
-  const fingerprint=planEvidenceFingerprint(data,p),changed=hasMutation||p.lastEvidenceFingerprint&&p.lastEvidenceFingerprint!==fingerprint;
+  const fingerprint=planEvidenceFingerprint(data,p),proof=proofOfPlanProgress(l,data,round,p,{now});
   p.lastCheckedAt=now;p.lastCheckedRevision=p.revision;p.lastEvidenceFingerprint=fingerprint;
-  if(changed){p.lastProgressAt=now;p.unchangedChecks=0;return;}
+  if(proof.progressed){
+    const freshActions=proof.receiptIds.flatMap(id=>{const j=l.journal.find(j=>j.id===id);if(!j)return [];let args;try{args=JSON.parse(j.args);}catch{return [];}return [{tool:j.tool,args,finishedAt:j.finishedAt}];});
+    const prior=p.lastProgressProof,executedStep=round.planNextStep??prior?.executedStep??p.nextStep;
+    const actions=[...(prior?.executedStep===executedStep?prior?.actions||[]:[]),...freshActions].filter((action,index,all)=>all.findIndex(other=>other.tool===action.tool&&JSON.stringify(other.args)===JSON.stringify(action.args))===index);
+    p.lastProgressAt=now;p.unchangedChecks=0;p.lastProgressProof={roundId:round.id,reason:proof.reason,receiptIds:proof.receiptIds,actions,executedStep};
+    const activity=freshActions.some(action=>/^mcp__fish-world__world_(?:go|do)$/.test(action.tool));
+    if(activity&&!(p.nextAt>now)){
+      if(p.waitCondition?.kind==='time'&&p.waitCondition.at<=now)p.lastTimeWake=p.waitCondition.at;
+      p.status='waiting_event';p.nextAt=0;p.waitCondition={kind:'state',when:'idle'};
+      p.waitAfterReceiptAt=Math.max(0,...freshActions.map(a=>a.finishedAt||0));
+      p.waitObservedBusy=!!data.state?.doing||data.state?.where?.kind==='trip';p.revision++;p.updatedAt=now;
+    }
+    return;
+  }
   p.unchangedChecks=(p.unchangedChecks||0)+1;
   if(p.unchangedChecks>=unchangedLimit){
-    p.status='waiting_event';if(p.waitCondition?.kind==='time'&&p.waitCondition.at<=now)p.lastTimeWake=p.waitCondition.at;p.waitCondition??=p.nextAt>now?{kind:'time',at:p.nextAt}:{kind:p.trigger?'event':'state',eventKind:p.trigger||null};
+    const wait=nextPlanWait(p,l,now);
+    if(p.waitCondition?.kind==='time'&&p.waitCondition.at<=now)p.lastTimeWake=p.waitCondition.at;
+    if(wait){p.status='waiting_event';p.waitCondition=wait;}
+    else {p.status='blocked';p.scheduleIssue={version:1,code:'trigger-needs-definition',at:now};}
     p.revision++;p.updatedAt=now;
   }
 }

@@ -1,5 +1,5 @@
 import {isExactFishIdentity} from './action-sequence.mjs';
-import {rememberOwnerTurn,taskForExecution,ownerTaskGuard,noteOwnerTaskResult,advanceOwnerTasks,endOwnerTaskRound,worldToolName} from './owner-tasks.mjs';
+import {rememberOwnerTurn,taskForExecution,ownerTaskGuard,noteOwnerTaskResult,advanceOwnerTasks,endOwnerTaskRound,worldToolName,reconcileOwnerTasks} from './owner-tasks.mjs';
 import {completedWindowRound,bindWindow,buildTaskPrompt} from './world-window.mjs';
 import {advancePlans,preparePlanChanges,applyPlanChanges,finishPlanCheck,planEvidenceFingerprint} from './plans.mjs';
 import {candidates,admission,reserveRound,effectiveNow,quotaAlert,closeOldAlerts,isQuotaDelivery,observeSatisfiedEvents,estimateTokens} from './governance.mjs';
@@ -8,6 +8,8 @@ import {randomUUID} from 'node:crypto';
 import {budget,defaults,synthetic,terminal,clean,timestamp,planOpen} from './state.mjs';
 import {workHoursAllowed} from './work-hours.mjs';
 import {previewShareEvidence,claimShareEvidence,reconcileShareEvidence} from './share-evidence.mjs';
+import {planActivityGuard} from './plan-activity.mjs';
+import {normalizePlanTriggers} from './plan-triggers.mjs';
 
 export const WORLD='mcp__fish-world__';
 export const worldNames=['now','history','find','profile','go','do','say','friends','update','guide'].map(n=>WORLD+'world_'+n);
@@ -50,6 +52,7 @@ export class LifeEngine {
     this.ownerPromptTokens=new WeakMap();
     this.change(l=>{
       for(const p of l.plans){p.nextAt=timestamp(p.nextAt);p.trigger=/到|抵达/.test(p.trigger)?'arrive':/结束|完成/.test(p.trigger)?'done':p.trigger;}
+      normalizePlanTriggers(l,{now:this.clock()});reconcileOwnerTasks(l,this.bridge.data,this.clock());
       if(l.journal.some(x=>x.status==='executing'))l.recovery=true;
       if(l.round){const reservation=l.scheduler?.reservations?.find(r=>r.roundId===l.round.id);if(reservation)reservation.status='uncertain';l.round.status='uncertain';l.round.stopReason='重启后先确认旧会话停止，再只读核对现场';l.recovery=true;}
       for(const q of l.queue)if(q.status==='running')q.status='uncertain';
@@ -150,7 +153,7 @@ export class LifeEngine {
       if(!await this.host.idle(l.sessionId))return this.blocked('恢复核对等待旧 Agent 与维护任务停止');
       if(!this.lock&&!l.externalPending)this.change(x=>{for(const j of x.journal)if(j.status==='executing'&&j.sessionId===x.sessionId){j.originalExecutionStatus='executing';j.status='uncertain';j.stopConfirmedAt=now;}});
     }
-    this.change((life,data)=>{advancePlans(life,data,now);advanceOwnerTasks(life,data,now);observeSatisfiedEvents(life);closeOldAlerts(life,now);settleMissingUsage(life,now);});
+    this.change((life,data)=>{normalizePlanTriggers(life,{now});reconcileOwnerTasks(life,data,now);advancePlans(life,data,now);advanceOwnerTasks(life,data,now);observeSatisfiedEvents(life);closeOldAlerts(life,now);settleMissingUsage(life,now);});
     const choices=candidates(this.l,this.bridge.data,c,now);let chosen,decision,firstBlocked;
     for(const task of choices){
       if(task.ownerTaskId&&this.host.ready){const mission=this.l.ownerTasks.find(t=>t.id===task.ownerTaskId),source=mission?.currentSessionId||mission?.source?.sessionId;if(source&&!await this.host.ready(source)){firstBlocked??={reason:'等待主人当前世界回合收尾'};break;}}
@@ -168,7 +171,9 @@ export class LifeEngine {
     const round={id:randomUUID(),sessionId:'',kind:chosen.kind,bucket:chosen.bucket,priority:chosen.priority,
       events:group.map(e=>e.id),sourceEventIds:[...new Set([...group.filter(e=>this.l.queue.some(q=>q.id===e.id)).map(e=>e.id),...(chosen.sourceEventIds||[])])],
       planId:chosen.planId||planIds[0]||null,planIds,ownerTaskId:chosen.ownerTaskId||null,planRevision:chosen.planRevision||null,reason:clean(chosen.plan?.goal||chosen.text).slice(0,1000),
-      startedAt:decision.now,status:'running',revision:this.l.revision,calls:0,receipts:[],observation:'',intent:null,report:null,readOnly:chosen.kind==='recovery'};
+      planNextStep:chosen.plan?.nextStep,
+      startedAt:decision.now,status:'running',revision:this.l.revision,calls:0,receipts:[],observation:'',intent:null,report:null,readOnly:chosen.kind==='recovery',
+      definitionOnly:chosen.definitionOnly===true,planningOnly:chosen.planningOnly===true,availabilityOnly:chosen.readOnly===true&&chosen.kind!=='recovery'};
     const prompt=this.prompt(group,round);
     let prepared;
     try{prepared=this.host.prepare?await this.host.prepare(prompt,round):{prompt,estimate:{roundPromptTokens:estimateTokens(prompt),requestTokens:estimateTokens(prompt)+16000,scope:'module-plus-unknown-wrapper-reserve'}};}
@@ -179,6 +184,7 @@ export class LifeEngine {
     this.change(l=>{
       const reservation=reserveRound(l,chosen,c,{now:this.clock(),roundId:round.id,estimate:prepared.estimate,costSummary:costSummary(l,this.clock())});
       round.startedAt=reservation.allowed.now;round.windowId=prepared.windowKey||l.contextWindow?.key||null;round.estimate=prepared.estimate;
+      if(round.kind==='plan-definition')for(const id of round.planIds){const p=l.plans.find(p=>p.id===id);if(p&&p.lastDefinitionRoundId!==round.id){p.definitionChecks=(p.definitionChecks||0)+1;p.lastDefinitionRoundId=round.id;p.nextDefinitionAt=round.startedAt+600000*2**p.definitionChecks;}}
       l.round=round;l.admission={reason:'',nextAllowedAt:round.startedAt+c.normalMinGapMs,estimate:prepared.estimate};
       for(const e of l.queue)if(round.events.includes(e.id)){if(chosen.kind!=='recovery')e.lastRoundId=round.id;e.status='running';}
       l.blocked='';beginCostRound(l,round);
@@ -202,7 +208,11 @@ export class LifeEngine {
     if(now-old.lastSeenAt>=60000){this.change(l=>{quotaAlert(l,{fishId:this.bridge.data.fishId,bucket,now,repeat:visit.count});});this.alertVisits.delete(old.key);}
   }
 
-  prompt(events,round=this.l.round){return buildTaskPrompt(this,events,round,this.host.memory?.()||'');}
+  prompt(events,round=this.l.round){return [buildTaskPrompt(this,events,round,this.host.memory?.()||''),
+    '计划续行：说明文字 trigger 不会自动变成定时器。pending/active 必须登记明确 nextAt 或合法 waitCondition（time 的 at，event 的真实事件种类及对象，或 state 等待现场活动结束）；无法确定就保留待定义，不假装已经安排执行。自然精力/饥饿变化和只读查询不是任务进展。当前行程、班次或活动未真实结束时，普通日程等待对应通知；不因另一份日程重复出发、折返或打断。班内已有待办使用现场 task-*，不能用 work 重新上班代替。',
+    round?.definitionOnly?(round.kind==='plan-definition'?'本轮只修复最多六条缺触发条件的旧计划：先按需查当前现场及原始历史，已完成或过时的事项用真实证据结清；仍有效才用 fish_life_finish planChanges.update 保存准确 nextAt/合法 waitCondition、status=pending、expectedRevision 与本轮 evidenceIds。不能把旧日程直接改成现在执行，不能重做历史动作，不能提交世界变更或向QQ补报历史。':'本轮只定义主人任务：先核对现场，再用 fish_life_task 保存完整后续步骤与准确时间，不能提交世界变更。原要求需未来执行时保存未来 nextAt，定义完成后正常结束，由后续到期回合执行。'):'',
+    round?.planningOnly?'本轮完成本地每日规划义务：只查现场、用 fish_life_finish 创建或更新对应业务日期的可执行日程，明确 businessAt/windowStart/windowEnd、nextAt 或结构化等待条件。不能用世界动作冒充规划完成，不修改原分享证据要求，不补发旧日程。':'',
+    round?.availabilityOnly?'本轮仅复查先前已明确满员的岗位：真实 world_now 核对可用位置，正常保存核对结果并结束；不在此轮重新接班。若已空位，程序会按原任务安排后续执行，未知旧动作仍不重做。':''].filter(Boolean).join('\n\n');}
 
   bind(sessionId,names){
     if(!worldNames.every(n=>names.includes(n)))throw Error('后台实际可见世界工具不完整');
@@ -247,6 +257,8 @@ export class LifeEngine {
     const taskDenied=ownerTaskGuard(this.l,this.bridge.data,exec,isBackground,now);if(taskDenied)return taskDenied;
     if(isBackground){
       if(!r||r.sessionId!==exec.agent?.session?.id||r.status!=='running'||r.revision!==this.l.revision||this.cfg.stopped||!this.cfg.autonomy||this.cfg.observeOnly)return '本轮已停止、会话不匹配或主人改变安排';
+      if(mutating(name,exec.arguments)&&(r.definitionOnly||r.planningOnly||r.availabilityOnly))return '本轮只核对空位、登记任务时间步骤或本地日程，不提交世界变更；原有未知结果和分享证据规则保持有效';
+      const activityDenied=planActivityGuard(this.bridge.data,r,name,exec.arguments,now);if(activityDenied)return activityDenied;
       if(r.calls>=this.cfg.maxCalls||now-r.startedAt>=this.cfg.turnMs)return '达到本轮调用/时间上限';
       if(mutating(name,exec.arguments)){
         if(r.readOnly||!r.observation)return '必须先真实观察；恢复回合禁止变更';
@@ -310,7 +322,8 @@ export class LifeEngine {
     const report={...input,reconciliations,facts,summary:clean(input.summary).slice(0,2000),share:clean(input.share).slice(0,1000),planChanges:operations};
     const sharing=previewShareEvidence(this.l,{fishId:this.bridge.data.fishId,round:r,report,now:this.clock()});
     this.change(l=>{l.round.report=report;});
-    return {ok:true,preparedPlans:operations.map(op=>({op:op.op,id:op.id,revision:op.plan?.revision??op.expectedRevision,candidateIds:op.candidateIds,status:op.op==='propose-refinement'?'blocked-local':undefined})),sharing,message:'回合报告已准备，结束本轮后原子提交；沿用以上程序计划 ID。分享未准入只保留本地，不必为此重试。QQ 投递独立核对。'};
+    return {ok:true,preparedPlans:operations.map(op=>({op:op.op,id:op.id,revision:op.plan?.revision??op.expectedRevision,candidateIds:op.candidateIds,
+      status:op.op==='propose-refinement'?'blocked-local':op.scheduleIssue?'blocked':op.plan?.status??op.patch?.status,scheduleIssue:op.scheduleIssue??op.plan?.scheduleIssue??op.patch?.scheduleIssue})),sharing,message:'回合报告已准备，结束本轮后原子提交；沿用以上程序计划 ID。计划若为 blocked 且有 scheduleIssue，表示尚未登记可执行条件，可在本轮修正准确时间或事件；不得为此重做世界动作。分享未准入只保留本地，不必为此重试。QQ 投递独立核对。'};
   }
   end(completed,error=''){
     if(!this.l.round)return;
@@ -318,7 +331,6 @@ export class LifeEngine {
     this.change(l=>{
       reconcileSharingPolicy(l,!!({...defaults,...this.settings()}.sharing),now);
       const report=r.report;let sharingEvidence;
-      endOwnerTaskRound(l,r,valid,now);
       for(const e of l.queue)if(r.events.includes(e.id)){
         const disposition=report?.events?.find(x=>x.id===e.id)?.status;
         e.status=valid&&['completed','expired','blocked'].includes(disposition)?disposition:'uncertain';
@@ -329,14 +341,15 @@ export class LifeEngine {
       }
       if(valid){
         applyPlanChanges(l,report.planChanges,{now,roundId:r.id});
-        for(const id of r.planIds||[r.planId])finishPlanCheck(l,this.bridge.data,{...r,planId:id},{now,hasMutation:r.receipts.some(x=>!x.isError&&mutating(x.tool)),unchangedLimit:this.cfg.unchangedPlanRoundLimit});
+        endOwnerTaskRound(l,r,valid,now);
+        if(r.kind!=='plan-definition')for(const id of r.planIds||[r.planId])finishPlanCheck(l,this.bridge.data,{...r,planId:id},{now,unchangedLimit:this.cfg.unchangedPlanRoundLimit});
         for(const p of l.plans.filter(p=>(r.planIds||[]).includes(p.id)||p.sourceEvidenceIds?.some(id=>r.receipts.some(x=>x.id===id)))){
           const success=r.receipts.filter(x=>!x.isError&&mutating(x.tool));
           if(success.length&&(p.trigger==='arrive'||p.trigger==='done'))(p.satisfiedStages??=[]).push({kind:p.trigger,at:now,expectedAt:p.nextAt||0,roundId:r.id,receiptIds:success.map(x=>x.id)});
         }
         l.nextIdle=Math.max(now+this.cfg.idleMs,timestamp(report.nextAt)||now+this.cfg.idleMs);
         if(r.readOnly){l.recovery=false;l.verification=false;}
-        const localOnly=r.readOnly||r.kind==='recovery',sharing=l.sharingPolicy.sharing;
+        const localOnly=r.readOnly||r.kind==='recovery'||r.definitionOnly||r.planningOnly||r.availabilityOnly,sharing=l.sharingPolicy.sharing;
         if(report.share&&(localOnly||!sharing||['urgent','important'].includes(report.importance))){
           const options={fishId:this.bridge.data.fishId,round:r,report,now};
           sharingEvidence=localOnly||!sharing?previewShareEvidence(l,options):claimShareEvidence(l,options);
@@ -345,6 +358,7 @@ export class LifeEngine {
         }
         l.failureBackoff={streak:0,lastRoundId:r.id,at:now,delayMs:0};l.backoffUntil=0;
       }else {
+        endOwnerTaskRound(l,r,false,now);
         const prior=l.failureBackoff?.streak,streak=Math.min(Number.MAX_SAFE_INTEGER,(Number.isSafeInteger(prior)&&prior>0?prior:0)+1);
         const delayMs=failureBackoffMs[Math.min(streak-1,failureBackoffMs.length-1)];
         l.failureBackoff={streak,lastRoundId:r.id,at:now,delayMs};l.recovery=true;l.backoffUntil=now+delayMs;
