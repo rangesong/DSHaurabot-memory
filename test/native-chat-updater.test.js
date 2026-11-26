@@ -82,3 +82,16 @@ test('profile lifecycle destinations use verified native restoration without tou
  assert.equal(fs.readFileSync(path.join(f.data,'memory.sqlite'),'utf8'),'synthetic private database stays untouched');
  assert.ok(!fs.existsSync(path.join(r.backup,'modules/memory.sqlite')));
 });
+
+test('purpose repairs archive code and install new helpers before reviewed importers without touching private state',async()=>{
+ const f=fixture('native-purpose');
+ const targets=['src/purpose/engine.js','src/purpose/module.js','src/modules/purpose/index.js'];
+ for(const name of targets){const file=path.join(f.host,name);fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,'export const before = true;\n');}
+ fs.mkdirSync(path.join(f.data,'purpose'));fs.writeFileSync(path.join(f.data,'purpose/purpose-state.json'),'{"private":"keep-current-state"}');
+ const transforms=[{area:'host',path:'src/purpose/evidence.js',transform:()=> 'export const evidence = true;\n'},
+  {area:'host',path:'src/purpose/outreach-guard.js',transform:()=> 'export const guard = true;\n'},
+  ...targets.map(name=>({area:'host',path:name,transform:()=> 'export const after = true;\n'}))];
+ const r=await updateNativeChat({...f,transforms,apply:true,client:client()});assert.equal(r.changes.length,5);assert.equal(r.public_download_verified,true);assert.equal(r.code_restoration_verified,true);
+ assert.equal(fs.readFileSync(path.join(f.data,'purpose/purpose-state.json'),'utf8'),'{"private":"keep-current-state"}');
+ assert.ok(!fs.existsSync(path.join(r.backup,'purpose/purpose-state.json')));
+});
