@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import {ownerTaskCandidates} from './owner-tasks.mjs';
+import {ownerTaskCandidates,ownerTaskInFlight} from './owner-tasks.mjs';
 import {dayKey,planOpen} from './state.mjs';
 import {provedWorkSource} from './plans.mjs';
 import {workHoursAllowed} from './work-hours.mjs';
@@ -34,7 +34,7 @@ export function candidates(l,data,cfg,now){
   const long=!!doing||data.state?.figure?.asleep||data.state?.where?.kind==='trip';
   if(cfg.idleEnabled&&!working&&now>=l.nextIdle&&(!long||end>0&&end<=now))list.push({id:'idle',kind:'idle',priority:4,bucket:'idle',text:'照顾基本生活，允许保持现状并等待。',group:[]});
   const owned=(l.ownerTasks||[]).filter(t=>t.status==='active'&&l.owner&&l.persona&&t.owner===l.owner&&t.persona===l.persona);
-  const inFlight=t=>['travelling','working','waiting_event'].includes(t.phase);
+  const inFlight=ownerTaskInFlight;
   const runnable=new Set(list.filter(c=>c.ownerTaskId).map(c=>c.ownerTaskId));
   const journeys=owned.filter(t=>t.kind==='journey'&&!t.optional).sort((a,b)=>b.createdAt-a.createdAt);
   const focusedJourney=journeys.find(t=>inFlight(t)||runnable.has(t.id)&&!(t.notBefore>now));

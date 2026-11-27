@@ -39,7 +39,8 @@ test('a current ordinary read task keeps same-session action attribution after a
 
 test('finite activity evidence requires the exact start label and final server primary activity, never a busy footer or parallel tea',()=>{
  const footer='—— 现在 12:00 · 在图书馆 · 在做：读合成书（12:30 结束）';assert.equal(finiteActivityFromReceipt('好的，你开始读合成书了。\n'+footer).label,'读合成书');
- for(const text of ['你买了一本书。\n'+footer,'好的，你开始读合成书评，12:30 结束。\n'+footer,'好的，你开始泡茶，12:05 结束。\n'+footer+' · 同时：泡茶（12:05 结束）','好的，你开始看看车了。\n—— 现在 12:00 · 在车行 · 在做：看看车','好的，你开始读合成书，12:30 结束。\n> '+footer,'好的，你开始读合成书，12:30 结束。\n'+footer+'\n> 引用尾注'])assert.equal(finiteActivityFromReceipt(text),null,text);
+ for(const text of ['你买了一本书。\n'+footer,'好的，你开始读合成书评，12:30 结束。\n'+footer,'好的，你开始看看车了。\n—— 现在 12:00 · 在车行 · 在做：看看车','好的，你开始读合成书，12:30 结束。\n> '+footer,'好的，你开始读合成书，12:30 结束。\n'+footer+'\n> 引用尾注'])assert.equal(finiteActivityFromReceipt(text),null,text);
+ assert.equal(finiteActivityFromReceipt('好的，你开始泡茶，12:05 结束。\n'+footer+' · 同时：泡茶（12:05 结束）').blocking,false);
  const f=fixture(),t=f.turn('请去商店买一本书');f.define(t,[step('book','买书')]);f.receipt(t,'book','你买了一本书。\n'+footer);assert.equal(t.status,'completed','an immediate purchase is not held for an unrelated existing reading activity');
 });
 
