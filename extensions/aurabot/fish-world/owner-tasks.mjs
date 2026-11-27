@@ -362,6 +362,8 @@ export function endOwnerTaskRound(l,round,valid,now){
  }
  if(task.availability?.checkOnly||task.availability?.lastCheckedAt>=round.startedAt)return;
  if(valid&&['pending','ready'].includes(task.phase)){
+  const defined=task.history.findLast(event=>event.kind==='defined');
+  if(!uncertainTask(l,task)&&defined?.at>=round.startedAt&&defined.at<=now&&task.notBefore>now&&task.nextAt>=task.notBefore){task.phase='pending';return;}
   if(task.completedSteps.some(s=>s.at>=round.startedAt)){task.nextAt=Math.max(task.nextAt,now+180000);return;}
   task.phase='waiting_evidence';task.nextAt=0;record(task,{kind:'no-task-progress',roundId:round.id,summary:round.report?.summary,noReplay:true},now);
  }
