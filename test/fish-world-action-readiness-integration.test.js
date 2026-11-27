@@ -1,8 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import {pathToFileURL} from 'node:url';
 import {newLife} from '../extensions/aurabot/fish-world/state.mjs';
 import {LifeEngine} from '../extensions/aurabot/fish-world/life.mjs';
 import {executeSequencedAction,noteActionSessionEvent,noteActionGuardRejected} from '../extensions/aurabot/fish-world/action-sequence.mjs';
+import {renderLifeTool} from '../extensions/aurabot/fish-world/tool-output.mjs';
 
 const W='mcp__fish-world__world_',NOW=Date.parse('2026-11-27T20:42:00+08:00');
 // Verified server protocol, with anonymous inventory counts and no private text.
@@ -100,4 +104,29 @@ test('unknown submitted outcomes preserve their original evidence and never exec
  const f=fixture({nowText:kitchen,timeoutAction:true});await f.manual('now');const action={tool:W+'do',arguments:'{"id":"cook-white-rice"}',category:'daily',cost:0,evidence:EXACT_LINE},first=await f.action(action);
  assert.equal(first.status,'uncertain');const before=f.effects.length;const repeated=await f.action({...action,arguments:'{"request_id":"changed","id":"cook-white-rice"}'});
  assert.equal(repeated.status,'uncertain');assert.equal(repeated.reused,true);assert.equal(repeated.receiptId,first.receiptId);assert.equal(f.effects.length,before);assert.equal(f.effects.filter(call=>call.name===W+'do').length,1);
+});
+
+function extractReadinessNative(asar,scratch){
+ assert.ok(scratch,'Use the managed test runner');const fd=fs.openSync(asar,'r'),head=Buffer.alloc(16);fs.readSync(fd,head,0,16,0);const hs=head.readUInt32LE(4),raw=Buffer.alloc(head.readUInt32LE(12));fs.readSync(fd,raw,0,raw.length,16);const tree=JSON.parse(raw),target=path.join(scratch,'readiness-native-sdk'),queue=['@deepseek-ai/dsh-tool-executor-native'],seen=new Set(),find=p=>p.split('/').reduce((n,k)=>n?.files?.[k],tree);
+ fs.mkdirSync(target,{recursive:true});fs.writeFileSync(path.join(target,'package.json'),'{"type":"module"}');
+ try{while(queue.length){const pkg=queue.shift();if(seen.has(pkg))continue;seen.add(pkg);const prefix=['dsh/node_modules/'+pkg,'node_modules/'+pkg].find(p=>find(p));assert.ok(prefix,'Missing installed runtime '+pkg);
+  const copy=(node,relative='')=>{for(const[name,entry]of Object.entries(node.files||{})){const rel=relative?relative+'/'+name:name;if(entry.files){copy(entry,rel);continue;}if(!/\.(js|mjs|cjs|json)$/.test(name))continue;let bytes;if(entry.unpacked)bytes=fs.readFileSync(asar+'.unpacked/'+prefix+'/'+rel);else{bytes=Buffer.alloc(entry.size);fs.readSync(fd,bytes,0,bytes.length,8+hs+Number(entry.offset));}const file=path.join(target,'node_modules',pkg,rel);fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,bytes);if(/\.(js|mjs|cjs)$/.test(name))for(const match of bytes.toString().matchAll(/(?:from\s*|import\s*)["']([^"']+)["']/g)){const spec=match[1];if(spec.startsWith('.')||spec.startsWith('node:'))continue;const dep=spec.startsWith('@')?spec.split('/').slice(0,2).join('/'):spec.split('/')[0];if(!['fs','path','crypto','os','url','util','stream','events','buffer','assert','async_hooks','module'].includes(dep))queue.push(dep);}}};copy(find(prefix));
+ }}finally{fs.closeSync(fd);}return target;
+}
+test('actual native wrapper can follow a current room suggestion without model-supplied evidence',async t=>{
+ if(!process.env.DSH_ASAR||!process.env.AURABOT_SOURCE){t.skip('Set DSH_ASAR and AURABOT_SOURCE for installed native readiness integration');return;}
+ const root=extractReadinessNative(process.env.DSH_ASAR,process.env.THINKSTAR_TEST_TMP),[{NativeToolExecutor},{defineTool}]=await Promise.all([import(pathToFileURL(path.join(root,'node_modules/@deepseek-ai/dsh-tool-executor-native/lib/index.js')).href),import(pathToFileURL(path.join(process.env.AURABOT_SOURCE,'src/tools/tools.js')).href)]),f=fixture(),signal=new AbortController().signal,toolSet={synthetic:'native-readiness'},agent={session:{id:f.round.sessionId,append:()=>assert.fail('No orphan session surface')}};
+ const guarded=[],observed=[],intents=[],nested=[];let official,sequence=0;
+ const originalIntent=f.engine.intent.bind(f.engine);f.engine.intent=input=>{intents.push(structuredClone(input));return originalIntent(input);};
+ const definitions=f.tools.definitions().map(def=>defineTool({name:def.name,properties:{},execute:async args=>({ok:true,message:await def.execute(args)})}));
+ definitions.push(defineTool({name:'fish_life_action',render:renderLifeTool,execute:(args,exec)=>executeSequencedAction({engine:f.engine,tools:official,exec},args)}));
+ const registry={executable:name=>definitions.find(def=>def.name===name),checkGuards(exec){guarded.push(exec.name);const reason=f.engine.guard(exec,true,false);if(reason)noteActionGuardRejected(f.engine,exec,reason);return reason?{reason}:undefined;}};
+ const context={tools:registry,waterfall:async(...args)=>args.at(-1)(),get:()=>undefined,logger:{warn:message=>assert.fail(message)},events:{dispatch:()=>[(exec,result)=>{observed.push(exec.name);f.engine.result(exec,result);}]}};
+ const executor=new NativeToolExecutor(context,()=>1);official={definitions:()=>definitions,selectExecutor:()=>executor,execute:batch=>{assert.equal(batch.log,undefined);assert.equal(batch.agent,agent);assert.equal(batch.signal,signal);assert.equal(batch.toolSet,toolSet);assert.equal(batch.maxParallelToolCalls,1);if(batch.calls[0].id.startsWith('fishseq-'))nested.push(batch.calls[0].name);return executor.execute(batch);}};
+ const invoke=async(name,args)=>{const id='readiness-native-parent-'+(++sequence);if(name==='fish_life_action')noteActionSessionEvent(f.engine,agent.session,{type:'tool/call',seq:sequence,data:{turn:1,step:sequence,callId:id,name,arguments:JSON.stringify(args)}});const batch=await official.execute({calls:[{type:'tool-call',id,name,arguments:JSON.stringify(args)}],agent,signal,toolSet,maxParallelToolCalls:1});const result=batch.results[0].result;assert.equal(result.isError,false);return name==='fish_life_action'?JSON.parse(result.content[0].text):result;};
+ await invoke(W+'now',{});const blocked=await invoke('fish_life_action',invalid);assert.equal(blocked.notSubmitted,true);assert.equal(f.effects.length,1);assert.equal(f.getRoom(),'客厅');
+ const next={...blocked.nextAction.arguments};delete next.evidence;assert.equal(Object.hasOwn(next,'evidence'),false);const moved=await invoke('fish_life_action',next);assert.equal(moved.ok,true,moved.message);assert.equal(f.getRoom(),'厨房');
+ assert.equal(intents.length,1);assert.equal(intents[0].evidence,ROOM_LINE);assert.equal(intents[0].tool,W+'go');assert.equal(JSON.parse(intents[0].arguments).place,'厨房');
+ assert.deepEqual(nested,[W+'profile',W+'go']);assert.equal(f.effects.filter(e=>e.name===W+'go').length,1);assert.equal(f.effects.filter(e=>e.name===W+'do').length,0);assert.deepEqual(observed.filter(name=>name.startsWith(W)),guarded.filter(name=>name.startsWith(W)));assert.equal(observed.filter(name=>name==='fish_life_action').length,2);assert.equal(f.engine.l.journal.find(row=>row.id===moved.receiptId).status,'confirmed');assert.equal(f.round.calls,3);assert.ok(f.round.calls<=6);assert.equal(f.engine.l.recovery,false);assert.equal(f.engine.l.outbox.length,0);
+ t.diagnostic(JSON.stringify({actualNativeToolExecutor:true,actualAurabotDefineTool:true,omittedEvidence:true,guardedRoomEvidence:true,worldCalls:f.round.calls,limit:6,modelCalls:0,realWorldCalls:0,qqSends:0}));
 });

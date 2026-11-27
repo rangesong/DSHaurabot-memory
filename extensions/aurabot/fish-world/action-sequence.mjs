@@ -73,21 +73,25 @@ function latestObservation(engine){
  const round=engine.l.round,receipt=round.receipts.findLast(r=>r.tool===PREFIX+'now'&&!r.isError);
  return receipt&&proof(engine,round,PREFIX+'now',receipt.id)?receipt:null;
 }
-function roomSuggestion(text,target){
- if(typeof target!=='string')return null;
+function homeRoomOptions(text){
  const lines=text.split(/\r?\n/),where=lines.findIndex(line=>/^你在[：:]家(?: · |$)/u.test(line));
  // Location and room options must be protocol headings, never a quotation or a past profile.
- if(where<0||where>3)return null;
+ if(where<0||where>3)return [];
  const start=lines.findIndex((line,i)=>i>where&&/^别的房间（world_do .+world_go .+）：$/u.test(line));
- if(start<0)return null;
+ if(start<0)return [];
  const choices=[];
  for(let i=start+1;i<lines.length;i++){
   const line=lines[i];if(!line.trim())continue;
   if(!/^· /u.test(line))break;
   const match=/^· ([^：\r\n]{1,80})：(.+)$/u.exec(line);if(!match)continue;
   const prefixes=[...match[2].matchAll(/(?<![A-Za-z0-9_-])([A-Za-z][A-Za-z0-9_-]*-)(?![A-Za-z0-9_-])/gu)].map(m=>m[1]);
-  if(prefixes.some(prefix=>target.startsWith(prefix)&&target.length>prefix.length))choices.push({room:match[1],line});
+  choices.push({room:match[1],line,prefixes});
  }
+ return choices;
+}
+function roomSuggestion(text,target){
+ if(typeof target!=='string')return null;
+ const choices=homeRoomOptions(text).filter(choice=>choice.prefixes.some(prefix=>target===prefix.slice(0,-1)||target.startsWith(prefix)));
  if(choices.length!==1)return null;
  const {room,line}=choices[0];
  return {nextAction:{tool:'fish_life_action',arguments:{tool:PREFIX+'go',arguments:JSON.stringify({place:room}),category:'daily',cost:0,evidence:line}},then:{tool:PREFIX+'now',arguments:{}}};
@@ -104,11 +108,16 @@ function evidenceFailure(engine,args,code){
 function selectEvidence(engine,input,args){
  const receipts=engine.l.round.receipts.filter(r=>!r.isError),evidence=typeof input.evidence==='string'?input.evidence:'';
  if(input.tool!==PREFIX+'do'&&evidence&&receipts.some(r=>r.text.includes(evidence)))return evidence;
+ if(input.tool===PREFIX+'go'&&!evidence){
+  const latest=latestObservation(engine),rooms=latest?homeRoomOptions(latest.text).filter(room=>room.room===args.place):[];
+  if(rooms.length===1)return rooms[0].line;
+ }
  const target=input.tool===PREFIX+'do'?args.id:input.tool===PREFIX+'say'?args.fish:null;
  if(typeof target!=='string'||!target.trim()){
   if(input.tool===PREFIX+'do')throw evidenceFailure(engine,args,'need-exact-evidence');
-  throw Error('需要当前真实回执的精确 evidence；此动作不能自动定位依据');
+  throw Object.assign(Error('需要当前真实回执的精确 evidence；此动作不能自动定位依据'),{code:'need-exact-evidence',retryableAfterObservation:true,evidenceSnapshot:latestObservation(engine)?hash(latestObservation(engine).text):null});
  }
+ if(input.tool===PREFIX+'do'&&target.endsWith('-'))throw evidenceFailure(engine,args,'need-options');
  const escaped=target.replace(/[.*+?^$\{\}()|[\]\\]/g,'\\$&');
  const exact=new RegExp('(^|[^\\p{L}\\p{N}_#-])'+escaped+'(?![\\p{L}\\p{N}_#-])','u'),lines=new Set();
  const latest=input.tool===PREFIX+'do'?latestObservation(engine):null;
@@ -126,7 +135,7 @@ function selectEvidence(engine,input,args){
  if(input.tool===PREFIX+'do'){
   if(lines.has(evidence))return evidence;
   if(lines.size!==1)throw evidenceFailure(engine,args,lines.size?'need-exact-evidence':'need-options');
- }else if(lines.size!==1)throw Error('未找到唯一、明确对应本动作的真实原行；请提供当前回执中的精确 evidence');
+ }else if(lines.size!==1)throw Object.assign(Error('未找到唯一、明确对应本动作的真实原行；请提供当前回执中的精确 evidence'),{code:'need-exact-evidence',retryableAfterObservation:true,evidenceSnapshot:latestObservation(engine)?hash(latestObservation(engine).text):null});
  return [...lines][0];
 }
 const clone=value=>structuredClone(value);
@@ -152,9 +161,13 @@ export async function executeSequencedAction({engine,tools,exec},input){
  let active=running.get(engine);if(!active)running.set(engine,active=new Map());
  if(active.has(key))return clone(await active.get(key));
  const existing=engine.l.round.actionSequences?.[actionKey],latest=latestObservation(engine);
+ let correctedEvidence=false;
+ if(existing?.outcome?.retryableAfterObservation===true&&typeof input.evidence==='string'&&input.evidence&&hash(input.evidence)!==existing.outcome.evidenceInputSha256){
+  try{correctedEvidence=selectEvidence(engine,input,args)===input.evidence;}catch{}
+ }
  const revalidate=existing?.outcome?.retryableAfterObservation===true&&existing.outcome.notSubmitted===true&&
   existing.outcome.status==='blocked'&&['need-options','need-exact-evidence'].includes(existing.outcome.code)&&
-  !existing.calls.some(call=>call.tool===input.tool)&&latest&&hash(latest.text)!==existing.outcome.evidenceSnapshot;
+  !existing.calls.some(call=>call.tool===input.tool)&&(correctedEvidence||latest&&hash(latest.text)!==existing.outcome.evidenceSnapshot);
  if(existing?.outcome&&!revalidate)return clone({...existing.outcome,reused:true});
  current(engine,exec,roundId,{reuse:true});
  if(existing&&!revalidate)throw Error('同一动作已有未确认的提交记录，禁止重做');
@@ -210,7 +223,7 @@ export async function executeSequencedAction({engine,tools,exec},input){
    const uncertain=mutationSubmitted&&!error[NOT_SUBMITTED]&&journal?.status!=='failed'||record?.calls.some(c=>c.status==='dispatching'||c.status==='uncertain');
    const outcome={ok:false,status:uncertain?'uncertain':'blocked',actionId:actionKey,tool:input.tool,receiptId:lastCall,
     message:String(error.message||error).slice(0,1000),notSubmitted:!mutationSubmitted||!!error[NOT_SUBMITTED],automaticReplay:false,
-    ...error.retryableAfterObservation?{code:error.code,retryableAfterObservation:true,evidenceSnapshot:error.evidenceSnapshot,optionLines:error.optionLines,...error.nextAction?{nextAction:error.nextAction,then:error.then}:{}}:{}};
+    ...error.retryableAfterObservation?{code:error.code,retryableAfterObservation:true,evidenceSnapshot:error.evidenceSnapshot,evidenceInputSha256:hash(input.evidence||''),optionLines:error.optionLines,...error.nextAction?{nextAction:error.nextAction,then:error.then}:{}}:{}};
    if(record)update((entry,round,l)=>{entry.status=outcome.status;entry.phase='stopped';entry.finishedAt=engine.clock();entry.outcome=outcome;
     if(uncertain){round.status='stopping';round.stopReason='顺序动作结果未确认；停止追加并只读恢复';l.recovery=true;}});
    return clone(outcome);

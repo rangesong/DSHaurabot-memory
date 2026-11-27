@@ -23,7 +23,7 @@ const internalKeys=new Set(['normalMinGapMs','urgentMinGapMs','urgentMaxRoundsPe
 const hostDefaults=Object.fromEntries(Object.entries(defaults).filter(([name])=>!internalKeys.has(name)));
 const key=v=>String(v||'').replace(/^session-/,'');
 export default {
-  id:'fish-world',name:'鱼的世界',version:"1.3.26",api:1,panel:'panel.js',
+  id:'fish-world',name:'鱼的世界',version:"1.3.27",api:1,panel:'panel.js',
   description:'同人格的事件处理、自主生活、计划续行和正式 QQ 分享。',defaults:hostDefaults,
   settings:[
     ...[['normalMinGapMs','普通回合最小间隔（毫秒）',180000],['urgentMinGapMs','真实紧急事件最小间隔（毫秒）',30000],['urgentMaxRoundsPer10Min','滚动十分钟紧急最多回合',4],['planRecheckMinMs','同计划复查最小间隔（毫秒）',600000],['workMs','上班兜底巡检间隔（毫秒）',600000],['socialMs','同发送者社交冷却（毫秒）',600000],['idleMs','普通闲时观察间隔（毫秒）',1800000],['unchangedPlanRoundLimit','无进展后等待证据的检查次数',1],['roundPromptEstimatedTokenLimit','本轮新增提示估算门槛',12000],['visibleContextEstimatedTokenLimit','可见历史换窗估算门槛',48000],['requestAdmissionEstimatedTokenLimit','完整请求估算目标',64000],['costSoftLimitCny','每日估算费用软阈值（元）',2],['costStopLimitCny','每日估算费用停止新回合阈值（元）',3]].map(([key,label,value])=>({key,label,type:'number',min:key.endsWith('Ms')?60000:0,max:key.endsWith('Ms')?86400000:1000000,hint:'未保存时沿用模块初值 '+value+'；只影响鱼世界自动生活，保留现有每日额度。Token为估算，费用无逐步硬预算保证。'})),
@@ -68,13 +68,13 @@ export default {
     const startEngine=()=>{if(bridge.fatal||bridge.migrationRequired)return;try{engine=new LifeEngine({bridge,host,settings:()=>api.settings?.()||{},authorized:allowed,identity});}catch{bridge.fatal||='自主生活状态初始化失败，已停止自动流程。';}};
     startEngine();
     const people=createPeopleIntegration({file:api.dataDir('people.json'),bridge,getEngine:()=>engine,identity,apiOrigin:WORLD_API,identityReady:createPeopleIdentityVerifier({file:api.dataDir('people-identity.json'),bridge,credential})});
-    const gate=bridge.migrationRequired?migrationGate(api,bridge,{version:"1.3.26",listAgents:()=>svc('agents')?.list?.()||[]}):null;
+    const gate=bridge.migrationRequired?migrationGate(api,bridge,{version:"1.3.27",listAgents:()=>svc('agents')?.list?.()||[]}):null;
     let gateStatus=bridge.migrationRequired?{ready:false,reason:'旧账本只读，等待静止核查与迁移'}:null;
     offs.push(installUsage(api,()=>engine));
     offs.push(installWorldRequestSeries(api.dsh,{getEngine:()=>engine,identity,scope,chatOfSession:id=>api.core.hub.chatOfSession?.(id)}));
     offs.push(api.dsh.on('session/event',(session,event)=>noteActionSessionEvent(engine,session,event)));
     installMaintenance(api,()=>engine,allowed);
-    const status=()=>{const {keyId,life,...snapshot}=bridge.snapshot();return {ok:!bridge.fatal,...snapshot,version:"1.3.26",configured:!!keyId,migrationRequired:!!bridge.migrationRequired,migration:gateStatus,life:engine?.snapshot()||null,wake:!!engine&&allowed()&&engine.cfg.autonomy&&!engine.cfg.observeOnly&&!engine.cfg.stopped};};
+    const status=()=>{const {keyId,life,...snapshot}=bridge.snapshot();return {ok:!bridge.fatal,...snapshot,version:"1.3.27",configured:!!keyId,migrationRequired:!!bridge.migrationRequired,migration:gateStatus,life:engine?.snapshot()||null,wake:!!engine&&allowed()&&engine.cfg.autonomy&&!engine.cfg.observeOnly&&!engine.cfg.stopped};};
     const writeStatus=()=>{if(!live)return;try{const f=api.dataDir('status.json');writeFileSync(f+'.tmp',JSON.stringify(status(),null,2)+'\n');renameSync(f+'.tmp',f);}catch{api.log.warn('鱼世界状态快照写入失败');}};
     api.on('config',()=>engine?.syncSharingPolicy());
     const sync=()=>allowed()&&!bridge.migrationRequired&&!engine?.cfg.stopped?bridge.sync():Promise.resolve();

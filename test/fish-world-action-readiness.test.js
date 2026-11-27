@@ -38,6 +38,36 @@ test('missing full action options stops before profile and supplies a local guar
  assert.deepEqual(r.nextAction,{tool:'fish_life_action',arguments:{tool:W+'go',arguments:JSON.stringify({place:'合成厨房'}),category:'daily',cost:0,evidence:roomLine}});
  assert.deepEqual(r.then,{tool:W+'now',arguments:{}});assert.equal(f.engine.l.recovery,false);
 });
+test('an omitted go quote is recovered only from the latest authoritative exact home room row',async()=>{
+ const f=fixture();await f.observe(living);const blocked=await f.run(),{evidence:omitted,...go}=blocked.nextAction.arguments;
+ const intent=f.engine.intent.bind(f.engine);let usedEvidence;f.engine.intent=args=>{usedEvidence=args.evidence;return intent(args);};
+ const r=await f.run(go);assert.equal(r.ok,true);assert.deepEqual(f.trace.map(x=>x.tool),[W+'now',W+'profile',W+'go']);
+ assert.equal(f.trace.at(-1).args.place,'合成厨房');assert.equal(usedEvidence,roomLine);
+});
+
+test('a bare advertised action family suggests inspection without guessing a complete executable ID',async()=>{
+ for(const id of ['cook','cook-']){
+  const f=fixture();await f.observe(living);const r=await f.run({...input,arguments:JSON.stringify({id})});
+  assert.equal(r.notSubmitted,true);assert.equal(r.nextAction.arguments.evidence,roomLine);assert.equal(f.trace.length,1);
+ }
+ const f=fixture();await f.observe(living);assert.equal((await f.run({...input,arguments:'{"id":"coo"}'})).nextAction,undefined);
+});
+
+test('corrected exact evidence can release a non-submitted preparation hold on the same observation once',async()=>{
+ const f=fixture(),line='· 合成公园（world_go 填合成公园）';await f.observe('11-27 周五 20:42\n你在：家 · 客厅\n'+line);
+ const go={tool:W+'go',arguments:'{"place":"合成公园"}',category:'daily',cost:0};
+ const first=await f.run(go),again=await f.run(go);assert.equal(first.notSubmitted,true);assert.equal(again.reused,true);assert.equal(f.trace.length,2);
+ const rejected=await f.run({...go,evidence:'合成公园，我猜可以去'});assert.equal(rejected.reused,true);assert.equal(f.trace.length,2);
+ const corrected=await f.run({...go,evidence:line});assert.equal(corrected.ok,true);assert.equal(f.trace.filter(x=>x.tool===W+'go').length,1);
+ const duplicate=await f.run({...go,evidence:line});assert.equal(duplicate.reused,true);assert.equal(duplicate.receiptId,corrected.receiptId);assert.equal(f.trace.filter(x=>x.tool===W+'go').length,1);
+});
+test('omitted go evidence never comes from old/profile/quoted/ambiguous or different-room material',async()=>{
+ const go={tool:W+'go',arguments:'{"place":"合成厨房"}',category:'daily',cost:0};
+ for(const text of [living.replace(roomLine,'> '+roomLine),living+'\n'+roomLine,living.replace('合成厨房：','合成后厨：'),living.replace('家 · 客厅','合成餐馆 · 大厅'),'11-27 周五 20:44\n你在：家 · 客厅\n—— '+roomLine]){
+  const f=fixture();await f.observe(living);await f.observe(text);f.profileText='synthetic#1\n'+roomLine;
+  const r=await f.run(go);assert.equal(r.ok,false);assert.equal(r.notSubmitted,true);assert.equal(f.trace.some(x=>x.tool===W+'go'),false);
+ }
+});
 test('non-do actions retain identity-first evidence supplied by the automatic self profile',async()=>{
  const f=fixture();f.profileText='synthetic#1\n合成衣柜：已有 synthetic-shirt';await f.observe(living);
  const r=await f.run({tool:W+'update',arguments:'{"outfit":"synthetic-shirt"}',category:'daily',cost:0,evidence:'合成衣柜：已有 synthetic-shirt'});
