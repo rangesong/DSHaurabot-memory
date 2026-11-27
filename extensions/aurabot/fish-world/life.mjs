@@ -48,10 +48,13 @@ function reconcileSharingPolicy(l,settingsSharing,now){
     if(reason)suppressUnsubmitted(o,reason,now);
   }
 }
-function recoveryOnlyCheckedIdlePreparation(l,r,failedId=l.failureBackoff?.lastRoundId){
+function recoveryOnlyCheckedIdlePreparation(l,r,{failedId=l.failureBackoff?.lastRoundId,now}={}){
   if(!r.readOnly&&r.kind!=='recovery')return false;
   const failed=l.journal.find(j=>j.type==='round'&&j.id===failedId&&j.status==='uncertain'&&j.kind==='idle');
   if(!failed)return false;
+  const started=l.scheduler?.starts?.find(row=>row.roundId===failed.id)?.at??l.costs?.rounds?.find(row=>row.roundId===failed.id)?.at;
+  if(!Number.isFinite(now)||!Number.isFinite(started)||started<=0||!Number.isFinite(failed.at)||started>failed.at||failed.at>now)return false;
+  if(l.journal.some(j=>j.tool&&mutating(j.tool,(()=>{try{return JSON.parse(j.args);}catch{return {};}})())&&(!Number.isFinite(j.at)||j.at>=started)))return false;
   const rows=l.journal.filter(j=>j.round===failed.id&&j.tool?.startsWith(WORLD));
   if(!rows.length||rows.some(j=>j.status!=='confirmed'||j.isError||mutating(j.tool,(()=>{try{return JSON.parse(j.args);}catch{return {};}})())))return false;
   return Object.values(failed.actionSequences||{}).every(sequence=>(sequence.calls||[]).every(call=>!mutating(call.tool)||call.status==='not-submitted'&&sequence.outcome?.notSubmitted===true&&call.guardRejection?.source==='local-engine.guard-rejection'));
@@ -63,8 +66,7 @@ function restoreIdlePreparationDeadline(l,cfg,now){
   const started=l.scheduler?.starts?.find(row=>row.roundId===recovered.id)?.at,due=snapshot.nextIdle;
   const copiedTask=[...(l.ownerTasks||[]),...l.plans].find(task=>task.owner===l.owner&&task.persona===l.persona&&['pending','active','waiting_event'].includes(task.status)&&task.nextAt===l.nextIdle&&task.nextAt>now);
   if(!Number.isFinite(started)||!Number.isFinite(failed.at)||failed.at>started||!Number.isFinite(due)||due<=0||due>started||now<recovered.at||now-recovered.at>cfg.idleMs||l.nextIdle!==recovered.at+cfg.idleMs&&!copiedTask||l.nextIdle<=now)return;
-  if(!recoveryOnlyCheckedIdlePreparation(l,{readOnly:true},failed.id))return;
-  if(l.journal.some(j=>j.tool&&j.at>=failed.at&&j.at<=recovered.at&&mutating(j.tool,(()=>{try{return JSON.parse(j.args);}catch{return {};}})())))return;
+  if(!recoveryOnlyCheckedIdlePreparation(l,{readOnly:true},{failedId:failed.id,now}))return;
   const previous=l.nextIdle;l.nextIdle=due;l.idlePreparationScheduleRepair={version:1,at:now,recoveryRoundId:recovered.id,failedRoundId:failed.id,previousNextIdle:previous,restoredNextIdle:due,...copiedTask?{copiedTaskId:copiedTask.id}:{},noWorldMutation:true};
 }
 export class LifeEngine {
@@ -405,7 +407,7 @@ export class LifeEngine {
         }
         // A proved read-only preparation failure has not completed self-care.
         // Preserve normal timing when any mutation or unknown dispatch may exist.
-        if(!r.definitionOnly&&!r.planningOnly&&!r.availabilityOnly&&!recoveryOnlyCheckedIdlePreparation(l,r))l.nextIdle=r.kind==='idle'&&!r.readOnly?Math.max(now+this.cfg.idleMs,timestamp(report.nextAt)||now+this.cfg.idleMs):now+this.cfg.idleMs;
+        if(!r.definitionOnly&&!r.planningOnly&&!r.availabilityOnly&&!recoveryOnlyCheckedIdlePreparation(l,r,{now}))l.nextIdle=r.kind==='idle'&&!r.readOnly?Math.max(now+this.cfg.idleMs,timestamp(report.nextAt)||now+this.cfg.idleMs):now+this.cfg.idleMs;
         if(r.readOnly){l.recovery=false;l.verification=false;}
         const localOnly=r.readOnly||r.kind==='recovery'||r.definitionOnly&&!r.journeyObservationCompleted||r.planningOnly||r.availabilityOnly,sharing=l.sharingPolicy.sharing;
         if(report.share&&(localOnly||!sharing||['urgent','important'].includes(report.importance))){

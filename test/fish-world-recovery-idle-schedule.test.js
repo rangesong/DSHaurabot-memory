@@ -8,6 +8,7 @@ function fixture({kind='recovery',readOnly=true,nextIdle=due,nextAt=0}={}){
  const data={fishId:'synthetic#1',state:{where:{kind:'home'},doing:null},at:{state:now},life:{...newLife(now-3600000),owner:'synthetic-owner',persona:'synthetic-persona'}},engine=new LifeEngine({bridge:{data,change:fn=>fn(data)},identity:()=>({owner:'synthetic-owner',persona:'synthetic-persona'}),clock:()=>now,host:{},settings:()=>({sharing:false})});
  engine.l.nextIdle=nextIdle;engine.l.recovery=readOnly;
  engine.l.failureBackoff={streak:1,lastRoundId:'failed-idle',at:now-300000,delayMs:300000};
+ engine.l.scheduler.starts.push({roundId:'failed-idle',at:now-360000});
  engine.l.journal.push({id:'failed-idle',type:'round',kind:'idle',status:'uncertain',at:now-300000,actionSequences:{}});
  engine.l.journal.push({id:'synthetic-read',round:'failed-idle',tool:'mcp__fish-world__world_now',status:'confirmed',args:'{}'});
  engine.l.scheduler.lastStartedAt=now-60000;
@@ -63,4 +64,10 @@ test('a recovery that copied a future task deadline restores only the overdue id
 test('scoped definitions do not reschedule self-care and other events cannot copy a future appointment into it',()=>{
  for(const flag of ['definitionOnly','planningOnly','availabilityOnly']){const {engine}=fixture({kind:'owner-task',readOnly:false,nextAt:now+7200000});engine.l.round[flag]=true;engine.end(true);assert.equal(engine.l.nextIdle,due,flag);}
  const {engine}=fixture({kind:'talk',readOnly:false,nextAt:now+7200000});engine.end(true);assert.equal(engine.l.nextIdle,now+defaults.idleMs);
+});
+test('private mutations during or after the failed idle and missing start evidence prevent early resumption',()=>{
+ for(const at of [now-330000,now-120000]){
+  const {engine}=fixture();engine.l.journal.push({id:'owner-action',round:null,tool:'mcp__fish-world__world_do',args:'{"id":"synthetic-owner-action"}',at,status:'confirmed'});engine.end(true);assert.equal(engine.l.nextIdle,now+defaults.idleMs);
+ }
+ const {engine}=fixture();engine.l.scheduler.starts=[];engine.end(true);assert.equal(engine.l.nextIdle,now+defaults.idleMs);
 });
