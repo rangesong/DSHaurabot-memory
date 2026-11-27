@@ -7,6 +7,37 @@ const key=v=>String(v||'').replace(/^session-/,'');
 const sha=v=>createHash('sha256').update(v).digest('hex');
 export function stableAgentIdle(a){const box=a?.inbox;return a?.status==='idle'&&typeof box?.hasPending==='boolean'&&!box.hasPending&&Array.isArray(box.nextTurn)&&box.nextTurn.length===0&&Array.isArray(box.nextStep)&&box.nextStep.length===0;}
 export function ownSession(l,id){if(!id)return false;return key(l.sessionId)===key(id)||(l.contextWindow?.windows||[]).some(w=>key(w.sessionId)===key(id));}
+/** Canonical SDK lookup and a narrowly proved stop, never evidence that an action succeeded. */
+export function createHostAgentLifecycle({findAgent,listAgents,resolveAgent,ownsSession}){
+ const canonical=id=>typeof id==='string'?key(id):'';
+ const checked=(agent,id)=>{if(agent&&canonical(agent.session?.id)!==id)throw Error('正式恢复的 Agent 不属于目标会话');return agent||null;};
+ const missing=(error,id)=>{
+  if(!id||error?.isDSHRemoteError!==true||error.code!=='session/not-found')return false;
+  return canonical(error.details?.sessionId)===id;
+ };
+ async function resolve(id){
+  const sid=canonical(id);if(!sid)return null;
+  const cached=findAgent?.(sid);if(cached)return checked(cached,sid);
+  if(typeof resolveAgent!=='function')throw Error('缺少正式会话恢复入口，不能确认 Agent 已停止');
+  const result=await resolveAgent(sid);if(result?.error)throw result.error;
+  return checked(result?.agent||result,sid);
+ }
+ function absent(id,error){
+  const sid=canonical(id);if(!missing(error,sid)||ownsSession?.(sid)!==true)return false;
+  const all=listAgents?.();
+  if(!Array.isArray(all)||all.some(agent=>!canonical(agent?.session?.id)||canonical(agent.session.id)===sid))return false;
+  // A concurrently attached local Agent takes precedence over an earlier remote absence.
+  return !findAgent?.(sid);
+ }
+ async function stopLookup(id){
+  try{return {agent:await resolve(id),absent:false};}catch(error){if(absent(id,error))return {agent:null,absent:true};throw error;}
+ }
+ return {resolve,
+  async cancel(id){const {agent}=await stopLookup(id);if(agent){await agent.cancel({kind:'user'},{keepInbox:false});if(agent.whenIdle)await agent.whenIdle();}},
+  async idle(id){if(!id)return true;const {agent,absent}=await stopLookup(id);if(absent)return true;if(!agent?.whenIdle)return false;await agent.whenIdle();return stableAgentIdle(agent);},
+  async ready(id){let agent;try{agent=await resolve(id);}catch(error){if(missing(error,canonical(id)))return false;throw error;}return !!agent&&stableAgentIdle(agent);},
+ };
+}
 export function installUsage(api,getEngine){
  let price;try{price=api.lib?.('core/usage.js')?.costOf;}catch{}
  const sources=new Map(),offs=[];

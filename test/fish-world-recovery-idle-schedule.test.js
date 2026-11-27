@@ -71,3 +71,23 @@ test('private mutations during or after the failed idle and missing start eviden
  }
  const {engine}=fixture();engine.l.scheduler.starts=[];engine.end(true);assert.equal(engine.l.nextIdle,now+defaults.idleMs);
 });
+
+test('interrupted read-only recoveries keep the original proved idle deadline without changing retry backoff',()=>{
+ const {engine}=fixture();engine.l.scheduler.starts.push({roundId:'interrupted-recovery',at:now-240000});
+ engine.l.journal.push({id:'interrupted-recovery',type:'round',kind:'recovery',status:'uncertain',at:now-180000,actionSequences:{}});
+ engine.l.failureBackoff={streak:2,lastRoundId:'interrupted-recovery',at:now-180000,delayMs:900000};
+ engine.end(true);assert.equal(engine.l.nextIdle,due);assert.equal(engine.l.recovery,false);
+ const g=fixture();g.engine.end(false);assert.equal(g.engine.l.failureBackoff.delayMs,900000,'existing failed-round backoff stays intact');
+});
+
+test('an intervening mutation, missing start or unknown empty sequence cannot be hidden by a recovery chain',()=>{
+ for(const variation of ['mutation','missing-start','unknown-sequence','normal-round']){
+  const {engine}=fixture();const row={id:'interrupted-recovery',type:'round',kind:'recovery',status:'uncertain',at:now-180000,actionSequences:{}};
+  if(variation!=='missing-start')engine.l.scheduler.starts.push({roundId:row.id,at:now-240000});
+  if(variation==='mutation')engine.l.journal.push({id:'private-change',round:null,tool:'mcp__fish-world__world_do',args:'{}',at:now-200000,status:'confirmed'});
+  if(variation==='unknown-sequence')row.actionSequences.unknown={tool:'mcp__fish-world__world_do',calls:[],outcome:{status:'uncertain'}};
+  if(variation==='normal-round')row.kind='talk';
+  engine.l.journal.push(row);engine.l.failureBackoff.lastRoundId=row.id;
+  engine.end(true);assert.equal(engine.l.nextIdle,now+defaults.idleMs,variation);
+ }
+});

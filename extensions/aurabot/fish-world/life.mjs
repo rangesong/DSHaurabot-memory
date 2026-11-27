@@ -50,14 +50,27 @@ function reconcileSharingPolicy(l,settingsSharing,now){
 }
 function recoveryOnlyCheckedIdlePreparation(l,r,{failedId=l.failureBackoff?.lastRoundId,now}={}){
   if(!r.readOnly&&r.kind!=='recovery')return false;
-  const failed=l.journal.find(j=>j.type==='round'&&j.id===failedId&&j.status==='uncertain'&&j.kind==='idle');
-  if(!failed)return false;
-  const started=l.scheduler?.starts?.find(row=>row.roundId===failed.id)?.at??l.costs?.rounds?.find(row=>row.roundId===failed.id)?.at;
-  if(!Number.isFinite(now)||!Number.isFinite(started)||started<=0||!Number.isFinite(failed.at)||started>failed.at||failed.at>now)return false;
+  const rounds=l.journal.filter(j=>j.type==='round');let i=rounds.findLastIndex(j=>j.id===failedId),failed=rounds[i],laterStart=now;
+  const startOf=round=>l.scheduler?.starts?.find(row=>row.roundId===round.id)?.at??l.costs?.rounds?.find(row=>row.roundId===round.id)?.at;
+  const checked=round=>{
+    const rows=l.journal.filter(j=>j.round===round.id&&j.tool?.startsWith(WORLD));
+    if(rows.some(j=>j.status!=='confirmed'||j.isError||mutating(j.tool,(()=>{try{return JSON.parse(j.args);}catch{return {};}})())))return false;
+    return Object.values(round.actionSequences||{}).every(sequence=>
+      (!mutating(sequence.tool)||sequence.outcome?.notSubmitted===true)&&
+      (sequence.calls||[]).every(call=>!mutating(call.tool)||call.status==='not-submitted'&&sequence.outcome?.notSubmitted===true&&call.guardRejection?.source==='local-engine.guard-rejection'));
+  };
+  // A restart may interrupt a read-only recovery before its first receipt. Such a
+  // round cannot complete self-care or erase the original idle preparation proof.
+  for(let count=0;failed?.kind==='recovery'&&count<8;count++){
+    const start=startOf(failed);
+    if(failed.status!=='uncertain'||!Number.isFinite(start)||start<=0||!Number.isFinite(failed.at)||start>failed.at||failed.at>laterStart||!checked(failed))return false;
+    laterStart=start;failed=rounds[--i];
+  }
+  if(failed?.kind!=='idle'||failed.status!=='uncertain')return false;
+  const started=startOf(failed);
+  if(!Number.isFinite(now)||!Number.isFinite(started)||started<=0||!Number.isFinite(failed.at)||started>failed.at||failed.at>laterStart)return false;
   if(l.journal.some(j=>j.tool&&mutating(j.tool,(()=>{try{return JSON.parse(j.args);}catch{return {};}})())&&(!Number.isFinite(j.at)||j.at>=started)))return false;
-  const rows=l.journal.filter(j=>j.round===failed.id&&j.tool?.startsWith(WORLD));
-  if(!rows.length||rows.some(j=>j.status!=='confirmed'||j.isError||mutating(j.tool,(()=>{try{return JSON.parse(j.args);}catch{return {};}})())))return false;
-  return Object.values(failed.actionSequences||{}).every(sequence=>(sequence.calls||[]).every(call=>!mutating(call.tool)||call.status==='not-submitted'&&sequence.outcome?.notSubmitted===true&&call.guardRejection?.source==='local-engine.guard-rejection'));
+  return l.journal.some(j=>j.round===failed.id&&j.tool?.startsWith(WORLD))&&checked(failed);
 }
 function restoreIdlePreparationDeadline(l,cfg,now){
   if(l.round||l.externalPending||l.recovery||l.backoffUntil>now)return;
