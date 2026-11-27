@@ -2,6 +2,7 @@ import {createHash} from 'node:crypto';
 import {inspectPlanTrigger} from './plan-triggers.mjs';
 import {parseWorldNowActivity} from './plan-activity.mjs';
 import {sessionKey,sameSession,ownerTaskContext,setOwnerTaskContext} from './session-identity.mjs';
+import {finiteActivityFromReceipt} from './finite-activity.mjs';
 const WORLD='mcp__fish-world__world_';
 const hash=v=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const open=t=>t?.status==='active';
@@ -91,8 +92,7 @@ function normalizeSteps(submitted){
   const {request_id:ignored,...args}=supplied;
   if(tool===WORLD+'friends'&&args.action==='list')throw Error('只读查询不能作为任务完成动作');
   const waitFor=tool===WORLD+'go'?'arrival':tool===WORLD+'do'&&args.id==='work'?'settlement':s.waitFor==='done'?'done':'receipt';
-  if(waitFor==='done'&&!String(s.eventText||'').trim())throw Error('等待活动完成须提供精确通知原文 eventText');
-  return {tool,arguments:args,nextStep:String(s.nextStep).slice(0,1000),waitFor,...waitFor==='done'?{eventText:String(s.eventText)}:{}};
+  return {tool,arguments:args,nextStep:String(s.nextStep).slice(0,1000),waitFor,...waitFor==='done'&&String(s.eventText||'').trim()?{eventText:String(s.eventText)}:{}};
  });
 }
 const taskSession=task=>task.journey?.registeredSessionId||task.currentSessionId||task.source?.sessionId;
@@ -146,7 +146,7 @@ export function rememberOwnerTurn(l,identity,{text,sessionId,turnKey,confirmedWo
  if(existing){context.taskId=existing.id;existing.currentSessionId=sessionId;
   if(existing.phase==='waiting_evidence'||existing.phase==='blocked'&&existing.contractIssue?.code==='definition-attempt-limit'){existing.phase=!existing.finalAction&&existing.kind!=='planning'||existing.scheduleRequired&&!existing.notBefore?'needs_definition':'pending';existing.nextAt=Math.max(existing.notBefore||0,now+180000);existing.definitionAttempts=0;existing.definitionNextAt=existing.nextAt;delete existing.contractIssue;record(existing,{kind:'owner-renewed',sourceKey:key},now);return existing;}return null;}
  const id='owner-task-'+hash([identity,sessionKey(sessionId),key,now,l.ownerTasks.length]).slice(0,24);
- const task={id,revision:1,status:'active',phase:spec.scheduled||spec.kind==='work-items'?'needs_definition':'pending',scheduleRequired:spec.scheduled,kind:spec.kind,optional:spec.optional,priority:spec.optional?3:0,instruction:String(text),nextStep:String(text),
+ const task={id,revision:1,status:'active',phase:spec.scheduled||!spec.finalAction&&spec.kind!=='planning'?'needs_definition':'pending',scheduleRequired:spec.scheduled,kind:spec.kind,optional:spec.optional,priority:spec.optional?3:0,instruction:String(text),nextStep:String(text),
   owner:identity.owner,persona:identity.persona,currentSessionId:sessionId,source:{kind:'current-owner-prompt',sessionId,key,at:now},createdAt:now,updatedAt:now,
   nextAt:spec.scheduled?0:now+180000,finalAction:spec.finalAction,steps:spec.finalAction?[{...clone(spec.finalAction),nextStep:String(text),waitFor:spec.kind==='work'?'settlement':'receipt'}]:[],stepIndex:0,completedSteps:[],receipts:[],history:[],checks:0};
  task.finalAction=task.steps.length?clone(task.steps[0]):null;if(task.kind==='planning')planningState(task,now);l.ownerTasks.push(task);context.taskId=id;return task;
@@ -156,8 +156,8 @@ export function taskForExecution(l,exec){
  const r=l.round,background=sameSession(r?.sessionId,exec.agent?.session?.id);
  const id=background?r.ownerTaskId:ownerTaskContext(l,exec.agent?.session?.id)?.taskId;
  const explicit=(l.ownerTasks||[]).find(t=>t.id===id&&sameScope(l,t)&&['active','completed'].includes(t.status));if(explicit||id)return explicit;
- const journeys=(l.ownerTasks||[]).filter(t=>open(t)&&sameScope(l,t)&&t.kind==='journey'&&sameSession(taskSession(t),exec.agent.session.id)&&(!background||t.journey.registeredRoundId===r.id));
- if(journeys.length)return journeys.length===1?journeys[0]:undefined;
+ const persistent=(l.ownerTasks||[]).filter(t=>open(t)&&sameScope(l,t)&&t.kind!=='planning'&&sameSession(taskSession(t),exec.agent.session.id)&&(!background||t.kind==='journey'&&t.journey.registeredRoundId===r.id));
+ if(persistent.length)return persistent.length===1?persistent[0]:undefined;
  // A task-* action identifies one real work item. Generic work/go/food must never reconcile by similarity.
  if(!background||exec.name!==WORLD+'do'||!/^task-\d+$/.test(exec.arguments?.id||''))return;
  const exact=(l.ownerTasks||[]).filter(t=>open(t)&&sameScope(l,t)&&t.kind==='work-items'&&t.finalAction?.tool===exec.name&&t.finalAction.arguments?.id===exec.arguments.id&&matches(exec.arguments,t.finalAction.arguments));
@@ -200,7 +200,7 @@ export function defineOwnerTask(l,input,{sessionId,background=false,taskId,now,d
  record(task,{kind:'defined',finalAction:clone(task.finalAction),nextStep:task.nextStep},now);return {ok:true,task:clone(task)};
 }
 function finishStep(task,evidence,now){
- task.completedSteps.push({index:task.stepIndex,action:clone(task.steps[task.stepIndex]),at:now,...evidence});task.stepIndex++;
+ task.completedSteps.push({index:task.stepIndex,action:clone(task.steps[task.stepIndex]),at:now,...task.activity?{activity:clone(task.activity)}:{},...evidence});task.stepIndex++;delete task.activity;
  if(task.kind==='journey'&&task.journey.stage==='outbound'){task.journey.stage='arrival-purpose';task.journey.arrivedAt=now;task.journey.arrivalEvidence=clone(evidence);task.finalAction=null;task.nextStep=task.journey.arrivalStep;task.phase='needs_definition';task.nextAt=now;task.definitionAttempts=0;task.definitionNextAt=now;return;}
  const next=task.steps[task.stepIndex];task.finalAction=next?clone(next):null;task.nextStep=next?.nextStep||task.nextStep;
  if(next){task.phase='pending';task.nextAt=now;}else{task.status='completed';task.phase='completed';task.completedAt=now;task.nextAt=0;}
@@ -213,12 +213,13 @@ export function ownerTaskGuard(l,data,exec,background,now){
  if(task.optional&&(data.state?.doing||(l.ownerTasks||[]).some(t=>t.id!==task.id&&open(t)&&['travelling','working','waiting_event'].includes(t.phase))))return '有空时再做的安排不能打断正在进行的任务；原始要求已保留';
  if(task.status==='completed')return '此主人任务已经有完整成功依据，不得重复执行；等待主人新的要求';
  if(task.phase==='uncertain')return '此主人任务存在未确认变更，只能只读核对，不得重做';
+ if(background&&['working','waiting_event'].includes(task.phase)&&[WORLD+'go',WORLD+'do'].includes(exec.name)&&!(task.phase==='working'&&exec.name===WORLD+'do'&&/^task-\d+$/.test(exec.arguments?.id||'')))return '当前已开始的活动尚未得到真实完成依据；先等待完成通知，不提前推进或用回家打断活动';
  if(priorAction(task,exec.name,exec.arguments))return '该动作在原会话已经成功提交；保留原时间与回执，查完成通知并继续剩余目的，不重新执行或补发旧事';
  if(task.kind==='journey'&&task.journey.stage==='outbound'&&(task.phase==='travelling'||exec.name!==task.finalAction?.tool||!matches(exec.arguments,task.finalAction.arguments)))return '原出发目的仍待到达，只能执行已登记地点这一程，不能改道或提前把目的当作完成；如要改目的请显式替换';
  if(task.availability?.checkOnly)return '已知满员只安排只读复查；先核对新的 world_now，不自动重放接班';
  if(['working','waiting_event'].includes(task.phase)&&exec.name===task.finalAction?.tool&&matches(exec.arguments,task.finalAction.arguments))return '此步骤已提交，等待真实完成通知，不重复执行';
  if(task.completedSteps.some(s=>s.action?.tool===exec.name&&matches(exec.arguments,s.action.arguments))&&!(task.finalAction?.tool===exec.name&&matches(exec.arguments,task.finalAction.arguments)))return '此任务的这个步骤已有成功回执，继续下一步，不要重复';
- if(task.phase==='needs_definition'||task.notBefore&&now<task.notBefore)return '主人任务的未来时间尚未登记或未到；用 fish_life_task 保存准确 nextAt，不能提前行动';
+ if(task.phase==='needs_definition'||task.notBefore&&now<task.notBefore)return '主人任务尚未登记完整后续步骤或准确未来时间，或尚未到约定时间；用 fish_life_task 保存步骤与 nextAt，不能提前行动';
  if(!task.finalAction)return '主人安排尚未登记完整后续步骤；先用 fish_life_task 保存任务 '+task.id+' 的下一步和完成动作';
  if(task.phase==='travelling'&&exec.name===task.finalAction?.tool&&matches(exec.arguments,task.finalAction.arguments))return '仍在路上；主人任务已持久保存，等待真实到达后继续，不要提前执行或反复重试';
  if(background&&task.kind==='work'&&task.phase==='ready'&&task.finalAction?.arguments?.id==='work'&&exec.name===WORLD+'do'&&exec.arguments.id!=='work'&&!/^task-/.test(exec.arguments.id||'')&&!/(?:先吃|吃完.{0,5}再)/.test(task.instruction))return '当前主人任务是到达后上工；临时生活动作不能替代，确需中断请如实报告受阻原因';
@@ -254,23 +255,40 @@ export function noteOwnerTaskResult(l,data,entry,now){
  }
  if(final&&entry.tool===final.tool&&matches(args,final.arguments)){
   task.receipts.push(receipt);task.finalActionCallId=entry.id;
+  const finite=entry.tool===WORLD+'do'?finiteActivityFromReceipt(entry.result):null;
   if(final.waitFor==='settlement'){task.phase='working';task.nextAt=0;}
-  else if(final.waitFor==='done'){task.phase='waiting_event';task.nextAt=0;}
+  else if(final.waitFor==='done'||finite){task.phase='waiting_event';task.nextAt=0;task.activity={label:finite?.label||null,startCallId:entry.id,startedAt:entry.at||entry.finishedAt||now,...finite||{},...(final.eventText?{eventText:final.eventText}:{})};}
   else finishStep(task,{callId:entry.id},now);
-  record(task,{kind:final.waitFor==='settlement'?'started-work':'action-confirmed',callId:entry.id},now);
+  record(task,{kind:final.waitFor==='settlement'?'started-work':task.phase==='waiting_event'?'activity-started':'action-confirmed',callId:entry.id},now);
+  if(task.phase==='waiting_event')reconcileActivityEvents(l,now);
  }
 }
 function arrived(task,event){return event.kind==='arrive'&&task.destination?.label&&event.text==='到了'+task.destination.label&&event.t>=task.travelAt;}
+function activityDone(task,event,now){
+ if(event.kind!=='done'||!event.provenance?.trusted||event.provenance.source!=='world-notify'||!Number.isFinite(event.t)||event.t>now||event.t<(task.activity?.startedAt??task.updatedAt))return false;
+ const exact=task.activity?.eventText||task.finalAction?.eventText;
+ return exact?event.text===exact:!!task.activity?.label&&typeof event.text==='string'&&event.text.startsWith(task.activity.label+'：');
+}
+function reconcileActivityEvents(l,now){
+ let changed=0;
+ for(const event of l.queue||[]){
+  const waiting=(l.ownerTasks||[]).filter(task=>open(task)&&sameScope(l,task)&&task.phase==='waiting_event'&&task.activity&&activityDone(task,event,now));
+  if(waiting.length!==1)continue;
+  const task=waiting[0],revision=task.revision;linkOwnerTaskEvent(l,event,now);if(task.revision!==revision)changed++;
+ }
+ return changed;
+}
 export function linkOwnerTaskEvent(l,event,now){
  const ids=[],completed=[];
+ const activityMatches=(l.ownerTasks||[]).filter(task=>open(task)&&sameScope(l,task)&&task.phase==='waiting_event'&&activityDone(task,event,now));
  for(const task of l.ownerTasks||[]){
   if(!open(task)||!sameScope(l,task)||!event.provenance?.trusted||event.t<task.createdAt)continue;
   if(task.phase==='travelling'&&arrived(task,event)){
    task.phase='ready';task.nextAt=now;task.arrivalEventId=event.id;if(task.travelCompletesStep)finishStep(task,{eventId:event.id,callId:task.travelCallId},now);record(task,{kind:'arrived',eventId:event.id,purposeStillPending:open(task)},now);if(open(task))ids.push(task.id);else if(task.kind==='journey'&&task.status==='completed')completed.push({taskId:task.id,goal:task.journey.goal,receiptIds:task.receipts.map(receipt=>receipt.id).slice(-8)});
   }else if(task.phase==='working'&&event.kind==='done'&&event.t>=task.updatedAt&&/^(?:下班|工作结算|班次结算)/.test(event.text)){
    task.settlementEventId=event.id;finishStep(task,{eventId:event.id,callId:task.finalActionCallId},now);record(task,{kind:'settled',eventId:event.id,workCallId:task.finalActionCallId},now);if(open(task))ids.push(task.id);
-  }else if(task.phase==='waiting_event'&&event.kind==='done'&&event.t>=task.updatedAt&&event.text===task.finalAction?.eventText){
-   finishStep(task,{eventId:event.id,callId:task.finalActionCallId},now);record(task,{kind:'activity-finished',eventId:event.id},now);if(open(task))ids.push(task.id);
+  }else if(task.phase==='waiting_event'&&activityMatches.includes(task)&&activityMatches.length===1){
+   finishStep(task,{eventId:event.id,callId:task.finalActionCallId},now);record(task,{kind:'activity-finished',eventId:event.id},now);if(open(task))ids.push(task.id);else completed.push({taskId:task.id,goal:task.journey?.goal||task.instruction,receiptIds:task.receipts.map(receipt=>receipt.id).slice(-8)});
   }
  }
  if(ids.length){event.ownerTaskIds=ids;event.status='pending';event.notBefore=now;}
@@ -288,7 +306,7 @@ export function ownerTaskCandidates(l,now,data={}){return (l.ownerTasks||[]).fil
  .sort((a,b)=>b.createdAt-a.createdAt).map(t=>({id:t.id,kind:'owner-task',ownerTaskId:t.id,optional:t.optional,priority:t.priority??0,bucket:['work','work-items'].includes(t.kind)?'work':'idle',definitionOnly:t.phase==='needs_definition',planningOnly:t.kind==='planning',readOnly:!!t.availability?.checkOnly,text:t.instruction,group:(l.queue||[]).filter(q=>q.ownerTaskIds?.includes(t.id)&&['pending','blocked'].includes(q.status))}));}
 export function ownerTaskSnapshot(l,round){
  const tasks=(l.ownerTasks||[]).filter(t=>open(t)&&sameScope(l,t)&&(!round?.ownerTaskId||t.id===round.ownerTaskId)).sort((a,b)=>b.createdAt-a.createdAt).slice(0,3);
- return tasks.map(t=>Object.fromEntries(['id','revision','status','phase','kind','instruction','nextStep','nextAt','notBefore','finalAction','steps','stepIndex','completedSteps','destination','arrivalEventId','arrivalState','finalActionCallId','source','availability','planning','journey','definitionAttempts','definitionNextAt','contractIssue'].filter(k=>t[k]!==undefined).map(k=>[k,t[k]])));
+ return tasks.map(t=>Object.fromEntries(['id','revision','status','phase','kind','instruction','nextStep','nextAt','notBefore','finalAction','steps','stepIndex','completedSteps','destination','arrivalEventId','arrivalState','finalActionCallId','source','availability','planning','journey','activity','definitionAttempts','definitionNextAt','contractIssue'].filter(k=>t[k]!==undefined).map(k=>[k,t[k]])));
 }
 export function ownerTaskPlanningComplete(l,round,now){
  const task=(l.ownerTasks||[]).find(t=>t.id===round.ownerTaskId&&open(t)&&sameScope(l,t)&&t.kind==='planning');if(!task)return {completed:false};
@@ -339,13 +357,15 @@ export function reconcileOwnerTasks(l,data,now){
    const last=(l.journal||[]).filter(row=>row.ownerTaskId===task.id&&row.tool===task.finalAction?.tool).at(-1);
    if(last&&fullRule(last)){waitAvailability(task,last,now);changed++;}
   }
+  if(task.kind!=='planning'&&task.phase==='pending'&&!task.finalAction&&!task.steps.length&&!task.receipts.length&&!task.completedSteps.length){task.phase='needs_definition';record(task,{kind:'empty-contract-needs-definition',noWorldMutation:true},now);changed++;}
  }
- return {changed};
+ return {changed:changed+reconcileActivityEvents(l,now)};
 }
 export function endOwnerTaskRound(l,round,valid,now){
  const task=(l.ownerTasks||[]).find(t=>t.id===round.ownerTaskId&&open(t)&&sameScope(l,t));if(!task)return;
  if(round.id&&task.lastEndedRoundId===round.id)return;task.lastEndedRoundId=round.id;
- task.checks++;task.lastCheckedAt=round.definitionOnly&&task.kind==='journey'&&task.phase==='pending'&&task.journey.definedAt>=round.startedAt?0:now;
+ const defined=task.history.findLast(event=>event.kind==='defined');
+ task.checks++;task.lastCheckedAt=round.definitionOnly&&task.phase==='pending'&&defined?.at>=round.startedAt&&defined.at<=now?0:now;
  if(task.kind==='planning'){
   planningState(task,now);
   const result=valid?ownerTaskPlanningComplete(l,round,now):{completed:false};

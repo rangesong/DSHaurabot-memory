@@ -25,7 +25,45 @@ export function chooseWindow(engine,base,{enabled=true,rounds=16,nonce=randomUUI
 }
 export function windowOwns(l,base,key){const w=l.contextWindow;return w?w.base===base&&key===w.key:key===base;}
 export function bindWindow(l,sessionId){const w=l.contextWindow;if(!w)return;const row=w.windows.findLast(x=>x.key===w.key);if(row){if(row.sessionId&&row.sessionId!==sessionId){w.windows.push({key:w.key,sessionId,at:Date.now(),resumed:true});}else row.sessionId=sessionId;}}
-const taskPlan=p=>({...Object.fromEntries(['id','revision','logicalKey','status','goal','reason','topic','subject','stage','nextStep','nextAt','expiresAt','trigger','waitCondition','sourceEventIds','sourceEvidenceIds','ownerInstructionRevision','lastCheckedAt','lastProgressAt'].filter(k=>p[k]!==undefined).map(k=>[k,p[k]])),constraints:(p.constraints||[]).filter(c=>!p.nextStep?.includes(c)),aliasCount:p.semanticAliases?.length||0,refinementCount:p.refinements?.length||0,historyReference:{kind:'plans',id:p.id}});
+const record=value=>!!value&&typeof value==='object'&&!Array.isArray(value);
+const planReference=p=>({kind:'plans',id:p.id});
+// Project complete, already registered parameters. Invalid legacy payloads stay
+// in the ledger by reference; never shorten a step or an argument into a new action.
+function taskStep(step){
+ try{
+  if(!record(step)||!/^(?:mcp__fish-world__)?world_(go|do|say|friends|update)$/.test(step.tool||'')||step.arguments!==undefined&&step.args!==undefined)return;
+  const args=step.arguments??step.args;if(typeof args==='string'&&Buffer.byteLength(args)>12000)return;
+  const parsed=typeof args==='string'?JSON.parse(args):args;
+  if(!record(parsed)||!Object.keys(parsed).length||Buffer.byteLength(JSON.stringify(parsed))>8192)return;
+  if(step.nextStep!==undefined&&(typeof step.nextStep!=='string'||step.nextStep.length>1000)||step.eventText!==undefined&&(typeof step.eventText!=='string'||step.eventText.length>1000)||step.waitFor!==undefined&&!['receipt','arrival','done','settlement'].includes(step.waitFor))return;
+  return structuredClone(Object.fromEntries(['tool','arguments','args','nextStep','waitFor','eventText'].filter(key=>step[key]!==undefined).map(key=>[key,step[key]])));
+ }catch{return;}
+}
+function taskExecution(p){
+ const result={},omitted={},reference=planReference(p);
+ if(p.destination!==undefined){
+  const d=p.destination;
+  if(d===null)result.destination=null;
+  else if(record(d)&&typeof d.id==='string'&&d.id.length>0&&d.id.length<=160&&(d.name===undefined||typeof d.name==='string'&&d.name.length<=160))result.destination={id:d.id,...d.name!==undefined?{name:d.name}:{}};
+  else omitted.destination={reason:'invalid-legacy-destination',reference};
+ }
+ if(p.steps!==undefined){
+  const steps=Array.isArray(p.steps)&&p.steps.length<=8?p.steps.map(taskStep):null;
+  if(steps&&steps.every(Boolean))result.steps=steps;
+  else omitted.steps={reason:Array.isArray(p.steps)&&p.steps.length>8?'step-count-exceeds-limit':'invalid-legacy-steps',count:Array.isArray(p.steps)?p.steps.length:null,limit:8,reference};
+ }
+ if(p.expectedAction!==undefined){const action=p.expectedAction===null?null:taskStep(p.expectedAction);if(action!==undefined)result.expectedAction=action;else omitted.expectedAction={reason:'invalid-legacy-action',reference};}
+ const proof=p.lastProgressProof;
+ if(record(proof)){
+  const allActions=Array.isArray(proof.actions)?proof.actions:[],allReceipts=Array.isArray(proof.receiptIds)?proof.receiptIds:[];
+  const actions=allActions.slice(-8).flatMap(action=>{const step=taskStep({tool:action?.tool,arguments:action?.args});return step?[{tool:step.tool,args:step.arguments,...Number.isFinite(action.finishedAt)?{finishedAt:action.finishedAt}:{}}]:[];});
+  const receiptIds=allReceipts.slice(-8).filter(id=>typeof id==='string'&&id.length<=200);
+  result.lastProgressProof={historical:true,noReplay:true,...Object.fromEntries(['roundId','reason','executedStep'].filter(key=>typeof proof[key]==='string'&&proof[key].length<=1000).map(key=>[key,proof[key]])),receiptIds,receiptCount:allReceipts.length,actions,actionCount:allActions.length,omittedActionCount:allActions.length-actions.length,historyReference:reference};
+ }
+ if(Object.keys(omitted).length)result.executionOmitted=omitted;
+ return result;
+}
+const taskPlan=p=>({...Object.fromEntries(['id','revision','logicalKey','status','goal','reason','topic','subject','stage','nextStep','nextAt','expiresAt','businessAt','windowStart','windowEnd','trigger','waitCondition','sourceEventIds','sourceEvidenceIds','ownerInstructionRevision','lastCheckedAt','lastProgressAt'].filter(k=>p[k]!==undefined).map(k=>[k,p[k]])),...taskExecution(p),constraints:(p.constraints||[]).filter(c=>!p.nextStep?.includes(c)),aliasCount:p.semanticAliases?.length||0,refinementCount:p.refinements?.length||0,historyReference:planReference(p)});
 const byId=rows=>Object.fromEntries(rows.map(row=>[row.id,row]));
 export function carryForward(engine,identity,now=Date.now(),round=engine.l.round){
  const l=engine.l,d=engine.bridge.data,c=engine.cfg,ids=new Set(round?.planIds||[]),eventIds=new Set(round?.events||[]);
@@ -58,7 +96,7 @@ export function buildTaskPrompt(engine,events,round,memory=''){
   '本轮任务快照：'+JSON.stringify(carryForward(engine,{},engine.clock(),round)),
   '最多 '+c.maxCalls+' 次世界调用、约 '+c.turnMs/1000+' 秒。每次世界变更首选 fish_life_action（参数与旧意图工具相同），程序按真实 world_now → world_profile({})核对本鱼 → fish_life_intent → 原样执行动作完成，已有本轮成功前置回执会复用。支持当前原生工具通道；其他通道使用明确手动四步，顺序不可跳过。每一次新的变更都必须有它自己的新意图，不能把购买的意图复用于致谢。提交原样工具名/参数、预计消费和本轮现场回执逐字依据。实际变更前 world_profile({}) 核对自己是 '+engine.bridge.data.fishId+'。'+(c.stocks?'证券已由主人开启，仍须核对现场和预算。':'证券未开启，禁止自主交易。')+(c.gifts?'赠礼已由主人开启，仍须核对预算。':'贵重赠礼未开启，禁止自主赠礼。')+'单次 '+c.singleSpend+' 贝、每日 '+c.dailySpend+' 贝。只操作世界，不调用电脑或其他平台。',
   'nextAt 是下次检查时间，不是到期时间；expiresAt 仅限业务明确期限。使用北京时间对应13位Unix毫秒。长活动不空等或轮询。无新证据的一次检查之后等待相关通知或状态变化。',
-  'ownerTasks 是主人当前尚未办完的原始要求，优先于临时生活安排。到达只完成路程，原始目的和后续步骤仍需执行。没有明确步骤时先 fish_life_task 登记1到8步：tool、完整JSON arguments、nextStep；go等待真实arrival，活动可指定waitFor=done及精确eventText，上工等待真实结算。步骤只由对应成功工具或真实通知推进；吃饭、换地点不能完成别的任务。结果未知不重做。多步任务不能只登记第一步。',
+  'ownerTasks 是主人当前尚未办完的原始要求，优先于临时生活安排。到达只完成路程，原始目的和后续步骤仍需执行。没有明确步骤时先 fish_life_task 登记1到8步：tool、完整JSON arguments、nextStep；go等待真实arrival，耗时活动等待真实完成；可指定waitFor=done，已知完整通知原文才填eventText，否则按成功开始回执绑定完成对象，上工等待真实结算。步骤只由对应成功工具或真实通知推进；吃饭、换地点不能完成别的任务。结果未知不重做。多步任务不能只登记第一步。',
   'fish_life_finish 使用 planChanges 增量操作 create/update/complete/expire/abandon/block/supersede/merge；更新须已有 id、expectedRevision。新计划业务身份 topic/subject/stage/businessAt/windowStart/windowEnd 清晰。同一事项沿用程序稳定 id。换说法或增加条件使用 refinesPlanId 或 update，保留原条件；不是新建事项。新社交回合的相关计划已在快照中。替代和归并给 targetId/targetExpectedRevision。完成/到期必须真实证据 evidenceIds；历史 needs_review 不擅自激活。旧 plans 格式可兼容，但不重复发送完整计划簿。',
   '本轮每个真实事件 id 必须在 events 指定 completed/expired/blocked；计划 id 交给 planChanges，也兼容 events 中明确处置。未确认结果不可重做，恢复轮只读。工作标记完成需要 world_do 成功回执，已过期任务记 expired，不探索或打断班次。社交先按需 world_history 核对原话。',
   '与明确编号的鱼互动前，可以用 fish_person_impression 按需回忆本地已有印象；没有档案不等于没有交往。需要原话仍用 fish_dialogue_history。新认识仅依据本轮已确认的双方往来，可在 fish_life_finish 的 peerImpressions 提供最多两条 fish、text（100到150字，最多180字）、sourceIds（可核对的本轮成功对鱼回执ID）。只概括相处感受及有据的关系，不推测人格；吃饭、衣服、行程等临时状态留在带原时间的往来记录，不写成长期或当前状态。没有可靠新认识就省略；不为建档另开回合、不额外访问世界、不向QQ播报整理过程，也不因补录历史触发分享。',

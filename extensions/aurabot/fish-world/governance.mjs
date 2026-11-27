@@ -33,10 +33,16 @@ export function candidates(l,data,cfg,now){
   const doing=data.state?.doing,end=Date.parse(doing?.until||doing?.endAt||data.state?.where?.arrive||'')||Number(doing?.endAt)||0;
   const long=!!doing||data.state?.figure?.asleep||data.state?.where?.kind==='trip';
   if(cfg.idleEnabled&&!working&&now>=l.nextIdle&&(!long||end>0&&end<=now))list.push({id:'idle',kind:'idle',priority:4,bucket:'idle',text:'照顾基本生活，允许保持现状并等待。',group:[]});
-  const ownerWaiting=(l.ownerTasks||[]).some(t=>t.status==='active'&&(['travelling','working','waiting_event'].includes(t.phase)||t.kind==='journey'&&['pending','ready','needs_definition'].includes(t.phase)));
-  const focusedJourney=(l.ownerTasks||[]).filter(t=>t.status==='active'&&t.kind==='journey'&&!t.optional&&['pending','ready','needs_definition','travelling','working','waiting_event'].includes(t.phase)).sort((a,b)=>b.createdAt-a.createdAt)[0];
+  const owned=(l.ownerTasks||[]).filter(t=>t.status==='active'&&l.owner&&l.persona&&t.owner===l.owner&&t.persona===l.persona);
+  const inFlight=t=>['travelling','working','waiting_event'].includes(t.phase);
+  const runnable=new Set(list.filter(c=>c.ownerTaskId).map(c=>c.ownerTaskId));
+  const journeys=owned.filter(t=>t.kind==='journey'&&!t.optional).sort((a,b)=>b.createdAt-a.createdAt);
+  const focusedJourney=journeys.find(t=>inFlight(t)||runnable.has(t.id)&&!(t.notBefore>now));
+  // A future purpose remains durable, but reserves attention only when due.
+  // Actual in-flight owner work still protects its activity from idle plans.
+  const ownerWaiting=owned.some(inFlight)||!!focusedJourney;
   const seen=new Set();return list.sort((a,b)=>a.priority-b.priority||(a.t||a.plan?.nextAt||0)-(b.t||b.plan?.nextAt||0)).filter(c=>{
-    if(focusedJourney&&c.kind==='owner'&&c.t<focusedJourney.createdAt)return false;
+    if(journeys[0]&&c.kind==='owner'&&c.t<journeys[0].createdAt)return false;
     if(focusedJourney&&c.ownerTaskId&&c.ownerTaskId!==focusedJourney.id){const other=l.ownerTasks.find(t=>t.id===c.ownerTaskId);if(other&&other.kind!=='planning'&&other.createdAt<=focusedJourney.createdAt)return false;}
     if(ownerWaiting&&c.priority>1&&!c.ownerTaskId&&!c.ownerTaskIds?.length)return false;const k=c.kind+':'+c.id;if(seen.has(k))return false;seen.add(k);return true;});
 }

@@ -23,7 +23,7 @@ const internalKeys=new Set(['normalMinGapMs','urgentMinGapMs','urgentMaxRoundsPe
 const hostDefaults=Object.fromEntries(Object.entries(defaults).filter(([name])=>!internalKeys.has(name)));
 const key=v=>String(v||'').replace(/^session-/,'');
 export default {
-  id:'fish-world',name:'鱼的世界',version:"1.3.23",api:1,panel:'panel.js',
+  id:'fish-world',name:'鱼的世界',version:"1.3.24",api:1,panel:'panel.js',
   description:'同人格的事件处理、自主生活、计划续行和正式 QQ 分享。',defaults:hostDefaults,
   settings:[
     ...[['normalMinGapMs','普通回合最小间隔（毫秒）',180000],['urgentMinGapMs','真实紧急事件最小间隔（毫秒）',30000],['urgentMaxRoundsPer10Min','滚动十分钟紧急最多回合',4],['planRecheckMinMs','同计划复查最小间隔（毫秒）',600000],['workMs','上班兜底巡检间隔（毫秒）',600000],['socialMs','同发送者社交冷却（毫秒）',600000],['idleMs','普通闲时观察间隔（毫秒）',1800000],['unchangedPlanRoundLimit','无进展后等待证据的检查次数',1],['roundPromptEstimatedTokenLimit','本轮新增提示估算门槛',12000],['visibleContextEstimatedTokenLimit','可见历史换窗估算门槛',48000],['requestAdmissionEstimatedTokenLimit','完整请求估算目标',64000],['costSoftLimitCny','每日估算费用软阈值（元）',2],['costStopLimitCny','每日估算费用停止新回合阈值（元）',3]].map(([key,label,value])=>({key,label,type:'number',min:key.endsWith('Ms')?60000:0,max:key.endsWith('Ms')?86400000:1000000,hint:'未保存时沿用模块初值 '+value+'；只影响鱼世界自动生活，保留现有每日额度。Token为估算，费用无逐步硬预算保证。'})),
@@ -68,13 +68,13 @@ export default {
     const startEngine=()=>{if(bridge.fatal||bridge.migrationRequired)return;try{engine=new LifeEngine({bridge,host,settings:()=>api.settings?.()||{},authorized:allowed,identity});}catch{bridge.fatal||='自主生活状态初始化失败，已停止自动流程。';}};
     startEngine();
     const people=createPeopleIntegration({file:api.dataDir('people.json'),bridge,getEngine:()=>engine,identity,apiOrigin:WORLD_API,identityReady:createPeopleIdentityVerifier({file:api.dataDir('people-identity.json'),bridge,credential})});
-    const gate=bridge.migrationRequired?migrationGate(api,bridge,{version:"1.3.23",listAgents:()=>svc('agents')?.list?.()||[]}):null;
+    const gate=bridge.migrationRequired?migrationGate(api,bridge,{version:"1.3.24",listAgents:()=>svc('agents')?.list?.()||[]}):null;
     let gateStatus=bridge.migrationRequired?{ready:false,reason:'旧账本只读，等待静止核查与迁移'}:null;
     offs.push(installUsage(api,()=>engine));
     offs.push(installWorldRequestSeries(api.dsh,{getEngine:()=>engine,identity,scope,chatOfSession:id=>api.core.hub.chatOfSession?.(id)}));
     offs.push(api.dsh.on('session/event',(session,event)=>noteActionSessionEvent(engine,session,event)));
     installMaintenance(api,()=>engine,allowed);
-    const status=()=>{const {keyId,life,...snapshot}=bridge.snapshot();return {ok:!bridge.fatal,...snapshot,version:"1.3.23",configured:!!keyId,migrationRequired:!!bridge.migrationRequired,migration:gateStatus,life:engine?.snapshot()||null,wake:!!engine&&allowed()&&engine.cfg.autonomy&&!engine.cfg.observeOnly&&!engine.cfg.stopped};};
+    const status=()=>{const {keyId,life,...snapshot}=bridge.snapshot();return {ok:!bridge.fatal,...snapshot,version:"1.3.24",configured:!!keyId,migrationRequired:!!bridge.migrationRequired,migration:gateStatus,life:engine?.snapshot()||null,wake:!!engine&&allowed()&&engine.cfg.autonomy&&!engine.cfg.observeOnly&&!engine.cfg.stopped};};
     const writeStatus=()=>{if(!live)return;try{const f=api.dataDir('status.json');writeFileSync(f+'.tmp',JSON.stringify(status(),null,2)+'\n');renameSync(f+'.tmp',f);}catch{api.log.warn('鱼世界状态快照写入失败');}};
     api.on('config',()=>engine?.syncSharingPolicy());
     const sync=()=>allowed()&&!bridge.migrationRequired&&!engine?.cfg.stopped?bridge.sync():Promise.resolve();
@@ -113,7 +113,7 @@ export default {
     });
     api.context(({chat})=>{if(!ownerChat(chat))return '';const s=api.settings(),i=identity(),life=engine?.l;return chatWorldContext(bridge.data,life?.owner===i.owner&&life.persona===i.persona?life:undefined,{body:s.chatBodyInjectionEnabled!==false,location:s.chatLocationInjectionEnabled!==false});});
     const taskProperties={id:{type:'string'},expectedRevision:{type:'integer'},action:{type:'string',enum:['define','complete_observation']},summary:{type:'string'},evidenceIds:{type:'array',items:{type:'string'}},nextAt:{type:'number'},steps:{type:'array',minItems:1,maxItems:8,items:{type:'object',properties:{tool:{type:'string'},arguments:{type:'string'},nextStep:{type:'string'},waitFor:{type:'string',enum:['receipt','done']},eventText:{type:'string'}},required:['tool','arguments','nextStep']}}};
-    const taskDescription='保存当前主人任务的完整后续步骤，原始要求不能被改掉。去、买、回来分别登记；走路等待真实到达，上工等待真实结算；读完等活动可用done和精确通知原文。只保存，不代替真实世界动作。';
+    const taskDescription='保存当前主人任务的完整后续步骤，原始要求不能被改掉。去、买、回来分别登记；走路等待真实到达，上工等待真实结算；耗时活动等真实完成再续行；可用done，eventText只有已知精确通知原文时才填，否则由真实开始回执绑定完成对象。只保存，不代替真实世界动作。';
     const dialogueProperties={fish:{type:'string',minLength:2,maxLength:18,description:'必须含稳定编号，例如 #1234 或名字#1234；不凭同名猜对象。'},query:{type:'string',minLength:1,maxLength:80,description:'可选，在返回的对话原文中查找的内容。'},date:{type:'string',minLength:10,maxLength:10,description:'可选，北京时间日期 YYYY-MM-DD。'},before:{type:'string',minLength:1,maxLength:24,description:'仅续读上次对鱼查询返回的 m_ 游标。'}};
     const dialogueDescription='回想与某条鱼说过的话时优先使用：按鱼编号只读查双方往来，自动续查更早内容，最多三页，并受剩余世界调用和时间限制。生活时间线仍用 world_history。结果只供内部查证；对主人直接自然回答，不播报检索进度、页数、游标、回执、JSON或内部状态。';
     const dialogueRender=(_args,value)=>[{type:'text',text:'【内部对话原文资料，仅供自然回答，不向QQ转述检索过程】\n'+(value?.dialogueText||value?.message||'本次没有取得可用原文，不据此断言从未聊过。')}];
