@@ -158,12 +158,12 @@ async function moduleFixture(t,sdk,{background=false}={}){
 test('module adds native dialogue lookup while retaining existing owner tools and the original MCP definition',async t=>{
   const sdk=await installed(t);if(!sdk)return;const f=await moduleFixture(t,sdk),original=f.history;
   const tools=f.build(),names=tools.map(tool=>tool.name);
-  assert.deepEqual(names.filter(name=>name!==TOOL),['fish_world_state','fish_life_history','fish_life_task','fish_world_control']);assert.equal(names.filter(name=>name===TOOL).length,1);
+  assert.deepEqual(names.filter(name=>name!==TOOL),['fish_world_state','fish_life_history','fish_life_journey','fish_life_task','fish_world_control']);assert.equal(names.filter(name=>name===TOOL).length,1);
   assert.equal(f.definitions.find(tool=>tool.name===WORLD),original);assert.equal(f.history.execute,original.execute);
   for(const level of ['guest','readonly'])assert.equal(f.build({level}).some(tool=>tool.name===TOOL),false);
   assert.equal(f.build({chat:{kind:'private',chatId:'private:fixture-guest',userId:'fixture-guest'}}).length,0);
   const unavailable=f.tools.selectExecutor;f.tools.selectExecutor=()=>({describe:()=>({schemas:[{name:'run_code'}]})});
-  assert.deepEqual(f.build().map(tool=>tool.name),['fish_world_state','fish_life_history','fish_life_task','fish_world_control']);f.tools.selectExecutor=unavailable;
+  assert.deepEqual(f.build().map(tool=>tool.name),['fish_world_state','fish_life_history','fish_life_journey','fish_life_task','fish_world_control']);f.tools.selectExecutor=unavailable;
   assert.ok(f.rules.some(rule=>rule('private').includes('自然回答')));noSideEffects(f);
 });
 

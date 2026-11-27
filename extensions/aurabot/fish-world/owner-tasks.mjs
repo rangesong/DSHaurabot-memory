@@ -1,5 +1,6 @@
 import {createHash} from 'node:crypto';
 import {inspectPlanTrigger} from './plan-triggers.mjs';
+import {parseWorldNowActivity} from './plan-activity.mjs';
 const WORLD='mcp__fish-world__world_';
 const hash=v=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const open=t=>t?.status==='active';
@@ -78,6 +79,49 @@ function directive(text){
  const finalAction=kind==='work'?{tool:WORLD+'do',arguments:{id:'work'}}:kind==='read'?{tool:WORLD+'do',arguments:{id:'read'}}:kind==='cook'?{tool:WORLD+'do',arguments:{id:'cook'}}:null;
  return {kind,optional:/没事|有空|可以|顺便/.test(value),finalAction:/再|然后|之后|回来|回家|顺便|并且|办完|煮.*吃|做饭.*吃/.test(value)?null:finalAction,scheduled:/明天|后天|下周|今晚|晚上|\d\s*(?:点|:|：)/.test(value)};
 }
+function requiredText(value,label,max=1000){if(typeof value!=='string'||!value.trim()||value.length>max||/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(value))throw Error(label+'需要明确且长度合适的文字');return value.trim();}
+function normalizeSteps(submitted){
+ if(!Array.isArray(submitted)||!submitted.length||submitted.length>8)throw Error('任务需要1到8个明确步骤');
+ return submitted.map(s=>{
+  const tool=worldToolName(s.tool),supplied=parse(s.arguments);
+  if(![WORLD+'go',WORLD+'do',WORLD+'say',WORLD+'friends',WORLD+'update'].includes(tool)||!supplied||typeof supplied!=='object'||Array.isArray(supplied)||!Object.keys(supplied).length||!String(s.nextStep||'').trim())throw Error('每一步需要实际工具、完整 JSON 参数及下一步说明');
+  const {request_id:ignored,...args}=supplied;
+  if(tool===WORLD+'friends'&&args.action==='list')throw Error('只读查询不能作为任务完成动作');
+  const waitFor=tool===WORLD+'go'?'arrival':tool===WORLD+'do'&&args.id==='work'?'settlement':s.waitFor==='done'?'done':'receipt';
+  if(waitFor==='done'&&!String(s.eventText||'').trim())throw Error('等待活动完成须提供精确通知原文 eventText');
+  return {tool,arguments:args,nextStep:String(s.nextStep).slice(0,1000),waitFor,...waitFor==='done'?{eventText:String(s.eventText)}:{}};
+ });
+}
+const taskSession=task=>task.journey?.registeredSessionId||task.currentSessionId||task.source?.sessionId;
+const exactPlace=(data,destination,now)=>fresh(data?.at?.state,now)&&data.state?.where?.kind!=='trip'&&(data.state?.where?.place?.id===destination||destination==='home'&&data.state?.where?.kind==='home');
+const observationIsAction=text=>/(?:购买|采购|采买|买|接班|上班|打工|领工钱|请教|询问|问老板|打听|交付|送货|种菜|做饭|煮饭)/.test(text);
+/** Register an explicit local purpose. This never executes a world tool or infers an owner command. */
+export function registerJourney(l,input,{sessionId,identity,now,background=false,sourceKind='explicit-journey',data}={}){
+ if(!sessionId||!identity?.owner||!identity?.persona||!Number.isFinite(now)||now<=0||l.owner&&l.owner!==identity.owner||l.persona&&l.persona!==identity.persona)throw Error('出发目的必须绑定当前主人、人格与会话');
+ if(background&&(l.round?.sessionId!==sessionId||l.round.status!=='running'))throw Error('不是当前世界后台会话');
+ const goal=requiredText(input?.goal,'原目的'),destination=requiredText(input?.destination,'真实地点编号',120),arrivalStep=requiredText(input?.arrivalStep,'到达后目的'),completionType=input?.completionType??'action';
+ if(/[\r\n]/.test(destination)||!['action','observe'].includes(completionType))throw Error('需要精确地点编号和合法完成类型');
+ if(completionType==='observe'&&observationIsAction(goal+' '+arrivalStep))throw Error('购买、上工或询问等实际行动不能登记成只观察完成');
+ const suggestedSteps=input.steps===undefined?[]:normalizeSteps(input.steps),tasks=l.ownerTasks||[],scheduled=sourceKind==='world-schedule',turnKey=l.ownerTaskContexts?.[sessionId]?.key,current=tasks.find(t=>t.id===l.ownerTaskContexts?.[sessionId]?.taskId&&open(t)&&sameScope(l,t));
+ if(scheduled&&tasks.some(t=>open(t)&&sameScope(l,t)&&t.kind!=='planning'&&!t.optional&&t.source?.kind!=='world-schedule'))throw Error('当前仍有主人目的；世界定时活动只能等待，不能替代或抢占');
+ const journeys=tasks.filter(t=>open(t)&&sameScope(l,t)&&t.kind==='journey'&&taskSession(t)===sessionId);
+ const same=journeys.find(t=>t.journey.goal===goal&&t.journey.destination===destination&&t.journey.arrivalStep===arrivalStep&&t.journey.completionType===completionType);
+ if(same&&!input.replaceTaskId){if(uncertainTask(l,same))throw Error('原出发有未确认结果，只能核对，不能重新登记或重放');if(!scheduled&&same.optional&&same.source.kind==='world-schedule'){const previousSource=clone(same.source);same.optional=false;same.priority=0;same.source={...same.source,kind:String(sourceKind).slice(0,80),confirmedByOwnerAt:now};record(same,{kind:'confirmed-by-owner',previousSource},now);}same.journey.registeredTurnKey=turnKey||hash(['journey',same.id]);l.ownerTaskContexts??={};l.ownerTaskContexts[sessionId]={key:same.journey.registeredTurnKey,taskId:same.id,at:now};return {ok:true,reused:true,task:clone(same),replacedIds:[]};}
+ const replace=input.replaceTaskId?tasks.find(t=>t.id===input.replaceTaskId&&open(t)&&sameScope(l,t)&&taskSession(t)===sessionId):null;
+ if(input.replaceTaskId&&(!replace||replace.kind==='planning'))throw Error('只能明确替换当前同会话的未完成临时目的，不能替换每日规划');
+ if(scheduled&&replace?.source?.kind!=='world-schedule'&&replace)throw Error('世界定时活动不能替换主人目的');
+ if(replace&&(uncertainTask(l,replace)||['working','waiting_event'].includes(replace.phase)))throw Error('旧目的存在未知、执行中或等待完成的动作，不能自动中断或重放');
+ const conflicts=[...journeys,...current&&current.kind!=='planning'?[current]:[]].filter(t=>t!==replace);
+ if(conflicts.length)throw Error('已有未完成目的 '+conflicts[0].id+'；需要 replaceTaskId 明确交接，不能遗忘旧目的');
+ const id='owner-task-'+hash([identity,sessionId,goal,destination,arrivalStep,completionType,now,tasks.length]).slice(0,24),step={tool:WORLD+'go',arguments:{place:destination},nextStep:'前往 '+destination+'；到达后：'+arrivalStep,waitFor:'arrival'};
+ const task={id,revision:1,status:'active',phase:'pending',scheduleRequired:false,kind:'journey',optional:scheduled,priority:scheduled?3:0,instruction:goal,nextStep:step.nextStep,owner:identity.owner,persona:identity.persona,currentSessionId:sessionId,source:{kind:String(sourceKind).slice(0,80),sessionId,at:now},createdAt:now,updatedAt:now,nextAt:now,finalAction:clone(step),steps:[step],stepIndex:0,completedSteps:[],receipts:[],history:[],checks:0,journey:{goal,destination,arrivalStep,completionType,registeredSessionId:sessionId,registeredTurnKey:turnKey||hash(['journey',id]),...background?{registeredRoundId:l.round.id}:{},stage:'outbound',suggestedSteps}};
+ if(exactPlace(data,destination,now)){task.steps=[];task.finalAction=null;task.phase='needs_definition';task.nextStep=arrivalStep;task.arrivalState={at:data.at.state,placeId:destination};task.journey.stage='arrival-purpose';task.journey.arrivedAt=data.at.state;task.journey.arrivalEvidence={kind:'state',at:data.at.state,placeId:destination};const label=data.state.where?.place?.name;if(typeof label==='string'&&label.trim())task.journey.destinationName=label.trim();}
+ if(replace){replace.status='cancelled';replace.phase='cancelled';replace.nextAt=0;record(replace,{kind:'journey-explicitly-replaced',replacedBy:id},now);}
+ l.ownerTasks??=[];l.ownerTasks.push(task);l.ownerTaskContexts??={};l.ownerTaskContexts[sessionId]={key:task.journey.registeredTurnKey,taskId:id,at:now};
+ if(background)l.round.ownerTaskId=id;
+ record(task,{kind:'journey-registered',goal,destination,arrivalStep,completionType,noWorldMutation:true},now);
+ return {ok:true,task:clone(task),replacedIds:replace?[replace.id]:[]};
+}
 // Only the host's current owner-prompt hook calls this. Historical chat text is never scanned on load.
 export function rememberOwnerTurn(l,identity,{text,sessionId,turnKey,confirmedWorld=false},now){
  if(!sessionId)return null;
@@ -109,30 +153,34 @@ export function taskForExecution(l,exec){
  const r=l.round,background=r?.sessionId===exec.agent?.session?.id;
  const id=background?r.ownerTaskId:l.ownerTaskContexts?.[exec.agent?.session?.id]?.taskId;
  const explicit=(l.ownerTasks||[]).find(t=>t.id===id&&sameScope(l,t)&&['active','completed'].includes(t.status));if(explicit||id)return explicit;
+ const journeys=(l.ownerTasks||[]).filter(t=>open(t)&&sameScope(l,t)&&t.kind==='journey'&&taskSession(t)===exec.agent.session.id&&(!background||t.journey.registeredRoundId===r.id));
+ if(journeys.length)return journeys.length===1?journeys[0]:undefined;
  // A task-* action identifies one real work item. Generic work/go/food must never reconcile by similarity.
  if(!background||exec.name!==WORLD+'do'||!/^task-\d+$/.test(exec.arguments?.id||''))return;
  const exact=(l.ownerTasks||[]).filter(t=>open(t)&&sameScope(l,t)&&t.kind==='work-items'&&t.finalAction?.tool===exec.name&&t.finalAction.arguments?.id===exec.arguments.id&&matches(exec.arguments,t.finalAction.arguments));
  return exact.length===1?exact[0]:undefined;
 }
 function record(task,event,now){task.history.push({at:now,...event});task.updatedAt=now;task.revision++;}
-export function defineOwnerTask(l,input,{sessionId,background=false,taskId,now}){
+export function defineOwnerTask(l,input,{sessionId,background=false,taskId,now,data}){
  const task=(l.ownerTasks||[]).find(t=>t.id===input.id&&open(t)&&sameScope(l,t));
- if(!task||(background?task.id!==taskId:l.ownerTaskContexts?.[sessionId]?.taskId!==task.id))throw Error('不是当前主人任务');
+ if(!task||(background?task.id!==taskId:l.ownerTaskContexts?.[sessionId]?.taskId!==task.id&&!(task.kind==='journey'&&taskSession(task)===sessionId)))throw Error('不是当前主人任务');
  if(input.expectedRevision!==task.revision)throw Error('主人任务版本已变化，请使用当前快照');
  if(task.kind==='planning')throw Error('每日规划只提交本地次日计划，不登记世界动作作为完成凭据');
+ if(uncertainTask(l,task))throw Error('仍有已提交步骤或未确认变更，先只读核对，不得替换或重复');
+ if(input.action==='complete_observation'){
+  if(task.kind!=='journey'||task.journey.completionType!=='observe'||task.journey.stage!=='arrival-purpose'||!task.journey.arrivedAt||task.phase!=='needs_definition')throw Error('仅已确认到达的观察目的可以用现场读取完成，实际行动仍须成功动作');
+  const summary=requiredText(input.summary,'观察总结'),ids=input.evidenceIds;
+  if(!Array.isArray(ids)||!ids.length||ids.length>8||new Set(ids).size!==ids.length||ids.some(id=>!(l.journal||[]).some(row=>row.id===id&&row.tool===WORLD+'now'&&row.status==='confirmed'&&!row.isError&&row.sessionId===sessionId&&fresh(row.finishedAt||row.at,now)&&row.at>=Math.max(task.createdAt,task.journey.arrivedAt)&&(!background||row.round===l.round?.id))))throw Error('观察完成需要本会话／本轮到达后成功 world_now 的精确 evidenceIds');
+  const latest=(l.journal||[]).findLast(row=>row.tool===WORLD+'now'&&row.status==='confirmed'&&!row.isError&&row.sessionId===sessionId&&(!background||row.round===l.round?.id));if(!ids.includes(latest?.id))throw Error('观察完成必须包含当前最新成功 world_now 的回执，不能回用旧到访资料');
+  if(ids.some(id=>{const row=l.journal.find(row=>row.id===id),at=row.finishedAt||row.at,state=parseWorldNowActivity(row.result),location=state?.where?.text?.split(' · ',1)[0],label=task.destination?.label||task.journey.destinationName;if(state&&label&&(state.where.kind!=='place'||location!==label))return true;if(fresh(data?.at?.state,now)&&data.at.state>=at)return !exactPlace(data,task.journey.destination,now);return !label||state?.where?.kind!=='place'||location!==label;}))throw Error('当前所在地尚未确认与原目的地点一致；保留目的，不能用别处或旧到访资料结清');
+  task.journey.observation={summary,evidenceIds:clone(ids),at:now,localOnly:true,communicationStatus:'not-claimed'};task.status='completed';task.phase='completed';task.completedAt=now;task.nextAt=0;record(task,{kind:'observation-completed',summary,evidenceIds:clone(ids),localOnly:true,communicationStatus:'not-claimed'},now);return {ok:true,task:clone(task)};
+ }
+ if(input.action!==undefined&&input.action!=='define')throw Error('未知任务操作');
+ if(task.kind==='journey'&&task.journey.stage==='outbound')throw Error('先完成已登记路程；到达后才根据现场登记后续真实步骤');
  if(task.scheduleRequired&&input.nextAt===undefined)throw Error('原始要求包含未来时间，必须明确保存 nextAt，不能默认为现在');
  if(['travelling','working','waiting_event','uncertain'].includes(task.phase))throw Error('仍有已提交步骤，先等待真实回执，不得替换或重复');
  const submitted=input.steps||[{tool:input.tool,arguments:input.arguments,nextStep:input.nextStep}];
- if(!Array.isArray(submitted)||!submitted.length||submitted.length>8)throw Error('任务需要1到8个明确步骤');
- const steps=submitted.map(s=>{
-  const tool=worldToolName(s.tool),supplied=parse(s.arguments);
-  if(![WORLD+'go',WORLD+'do',WORLD+'say',WORLD+'friends',WORLD+'update'].includes(tool)||!supplied||typeof supplied!=='object'||Array.isArray(supplied)||!Object.keys(supplied).length||!String(s.nextStep||'').trim())throw Error('每一步需要实际工具、完整 JSON 参数及下一步说明');
-  const {request_id:ignored,...args}=supplied;
-  if(tool===WORLD+'friends'&&args.action==='list')throw Error('只读查询不能作为任务完成动作');
-  const waitFor=tool===WORLD+'go'?'arrival':tool===WORLD+'do'&&args.id==='work'?'settlement':s.waitFor==='done'?'done':'receipt';
-  if(waitFor==='done'&&!String(s.eventText||'').trim())throw Error('等待活动完成须提供精确通知原文 eventText');
-  return {tool,arguments:args,nextStep:String(s.nextStep).slice(0,1000),waitFor,...waitFor==='done'?{eventText:String(s.eventText)}:{}};
- });
+ const steps=normalizeSteps(submitted);
  if(task.kind==='work'&&!task.completedSteps.some(s=>s.action.tool===WORLD+'do'&&s.action.arguments.id==='work')&&!steps.some(s=>s.tool===WORLD+'do'&&s.arguments.id==='work'))throw Error('打工任务必须包含 world_do(id=work)，吃饭或到达不能替代');
  if(task.kind==='work-items'){
   const current=(l.journal||[]).findLast(row=>row.tool===WORLD+'now'&&row.status==='confirmed'&&!row.isError&&row.sessionId===sessionId&&fresh(row.finishedAt||row.at,now)&&(!background||row.round===l.round?.id)),offered=taskOptions(current?.result);
@@ -143,11 +191,13 @@ export function defineOwnerTask(l,input,{sessionId,background=false,taskId,now})
  if(steps.some(s=>task.completedSteps.some(done=>done.action.tool===s.tool&&matches(s.arguments,done.action.arguments))))throw Error('已完成步骤不能重新登记；只细化尚未完成的后续步骤');
  task.steps=[...task.steps.slice(0,task.stepIndex),...steps];task.finalAction=clone(steps[0]);task.nextStep=steps[0].nextStep;task.nextAt=input.nextAt??Math.max(task.nextAt,now);task.notBefore=input.nextAt??0;
  task.definitionAttempts=0;task.definitionNextAt=0;delete task.contractIssue;
+ if(task.kind==='journey'){task.lastCheckedAt=0;task.journey.definedAt=now;task.journey.stageVersion=(task.journey.stageVersion||0)+1;}
  if(['needs_definition','blocked','waiting_evidence'].includes(task.phase))task.phase='pending';
  record(task,{kind:'defined',finalAction:clone(task.finalAction),nextStep:task.nextStep},now);return {ok:true,task:clone(task)};
 }
 function finishStep(task,evidence,now){
  task.completedSteps.push({index:task.stepIndex,action:clone(task.steps[task.stepIndex]),at:now,...evidence});task.stepIndex++;
+ if(task.kind==='journey'&&task.journey.stage==='outbound'){task.journey.stage='arrival-purpose';task.journey.arrivedAt=now;task.journey.arrivalEvidence=clone(evidence);task.finalAction=null;task.nextStep=task.journey.arrivalStep;task.phase='needs_definition';task.nextAt=now;task.definitionAttempts=0;task.definitionNextAt=now;return;}
  const next=task.steps[task.stepIndex];task.finalAction=next?clone(next):null;task.nextStep=next?.nextStep||task.nextStep;
  if(next){task.phase='pending';task.nextAt=now;}else{task.status='completed';task.phase='completed';task.completedAt=now;task.nextAt=0;}
 }
@@ -159,6 +209,7 @@ export function ownerTaskGuard(l,data,exec,background,now){
  if(task.optional&&(data.state?.doing||(l.ownerTasks||[]).some(t=>t.id!==task.id&&open(t)&&['travelling','working','waiting_event'].includes(t.phase))))return '有空时再做的安排不能打断正在进行的任务；原始要求已保留';
  if(task.status==='completed')return '此主人任务已经有完整成功依据，不得重复执行；等待主人新的要求';
  if(task.phase==='uncertain')return '此主人任务存在未确认变更，只能只读核对，不得重做';
+ if(task.kind==='journey'&&task.journey.stage==='outbound'&&(task.phase==='travelling'||exec.name!==task.finalAction?.tool||!matches(exec.arguments,task.finalAction.arguments)))return '原出发目的仍待到达，只能执行已登记地点这一程，不能改道或提前把目的当作完成；如要改目的请显式替换';
  if(task.availability?.checkOnly)return '已知满员只安排只读复查；先核对新的 world_now，不自动重放接班';
  if(['working','waiting_event'].includes(task.phase)&&exec.name===task.finalAction?.tool&&matches(exec.arguments,task.finalAction.arguments))return '此步骤已提交，等待真实完成通知，不重复执行';
  if(task.completedSteps.some(s=>s.action?.tool===exec.name&&matches(exec.arguments,s.action.arguments))&&!(task.finalAction?.tool===exec.name&&matches(exec.arguments,task.finalAction.arguments)))return '此任务的这个步骤已有成功回执，继续下一步，不要重复';
@@ -188,8 +239,12 @@ export function noteOwnerTaskResult(l,data,entry,now){
  }
  const final=task.finalAction,receipt={id:entry.id,tool:entry.tool,at:entry.finishedAt||now};
  if(entry.tool===WORLD+'go'){
+  if(/^(?:去[^\n]{1,120}有\s*\d+\s*种走法|[^\n]*world_go 时 by 填其中一个)/.test(entry.result||''))return;
   const arrival=/(\d{1,2}:\d{2})\s*到([^。；\n]+?)(?:[。；\n]|$)/.exec(entry.result||'');
+  const immediate=/^好的[，,。]\s*你(?:走进了|走到了|来到了|回到了)([^。！\n]+)[。！]?/.exec(entry.result||'');
+  if(task.kind==='journey'&&!arrival&&!immediate){task.phase='uncertain';l.recovery=true;record(task,{kind:'travel-evidence-missing',callId:entry.id,noReplay:true},now);return;}
   task.travelCompletesStep=final?.tool===entry.tool&&matches(args,final.arguments);task.destination={id:args.place,label:arrival?.[2]?.trim()||null};task.travelCallId=entry.id;task.travelAt=now;task.phase='travelling';task.nextAt=0;
+  if(immediate){task.destination.label=immediate[1].trim();task.receipts.push(receipt);if(task.travelCompletesStep)finishStep(task,{callId:entry.id,kind:'immediate-arrival'},now);else{task.phase='ready';task.nextAt=now;}record(task,{kind:'arrived-immediately',callId:entry.id,purposeStillPending:open(task)},now);return;}
   task.receipts.push(receipt);record(task,{kind:'travel',destination:clone(task.destination),callId:entry.id,purpose:task.instruction,nextStep:task.nextStep},now);return;
  }
  if(final&&entry.tool===final.tool&&matches(args,final.arguments)){
@@ -202,11 +257,11 @@ export function noteOwnerTaskResult(l,data,entry,now){
 }
 function arrived(task,event){return event.kind==='arrive'&&task.destination?.label&&event.text==='到了'+task.destination.label&&event.t>=task.travelAt;}
 export function linkOwnerTaskEvent(l,event,now){
- const ids=[];
+ const ids=[],completed=[];
  for(const task of l.ownerTasks||[]){
   if(!open(task)||!sameScope(l,task)||!event.provenance?.trusted||event.t<task.createdAt)continue;
   if(task.phase==='travelling'&&arrived(task,event)){
-   task.phase='ready';task.nextAt=now;task.arrivalEventId=event.id;if(task.travelCompletesStep)finishStep(task,{eventId:event.id,callId:task.travelCallId},now);record(task,{kind:'arrived',eventId:event.id,purposeStillPending:open(task)},now);if(open(task))ids.push(task.id);
+   task.phase='ready';task.nextAt=now;task.arrivalEventId=event.id;if(task.travelCompletesStep)finishStep(task,{eventId:event.id,callId:task.travelCallId},now);record(task,{kind:'arrived',eventId:event.id,purposeStillPending:open(task)},now);if(open(task))ids.push(task.id);else if(task.kind==='journey'&&task.status==='completed')completed.push({taskId:task.id,goal:task.journey.goal,receiptIds:task.receipts.map(receipt=>receipt.id).slice(-8)});
   }else if(task.phase==='working'&&event.kind==='done'&&event.t>=task.updatedAt&&/^(?:下班|工作结算|班次结算)/.test(event.text)){
    task.settlementEventId=event.id;finishStep(task,{eventId:event.id,callId:task.finalActionCallId},now);record(task,{kind:'settled',eventId:event.id,workCallId:task.finalActionCallId},now);if(open(task))ids.push(task.id);
   }else if(task.phase==='waiting_event'&&event.kind==='done'&&event.t>=task.updatedAt&&event.text===task.finalAction?.eventText){
@@ -214,9 +269,10 @@ export function linkOwnerTaskEvent(l,event,now){
   }
  }
  if(ids.length){event.ownerTaskIds=ids;event.status='pending';event.notBefore=now;}
+ if(completed.length){event.completedOwnerTaskIds=completed.slice(0,3).map(item=>item.taskId);event.completedPurpose=completed[0];event.status='pending';event.notBefore=now;}
 }
 export function advanceOwnerTasks(l,data,now){
- const at=data.at?.state||0;if(at<now-180000)return;
+ const at=data.at?.state||0;if(at<now-180000||at>now)return;
  for(const task of l.ownerTasks||[]){
   const where=data.state?.where,reached=!!task.destination?.id&&(where?.place?.id===task.destination.id||where?.kind==='home'&&task.destination.id==='home');
   if(!open(task)||!sameScope(l,task)||task.phase!=='travelling'||at<task.travelAt||where?.kind==='trip'||!reached)continue;
@@ -227,7 +283,7 @@ export function ownerTaskCandidates(l,now,data={}){return (l.ownerTasks||[]).fil
  .sort((a,b)=>b.createdAt-a.createdAt).map(t=>({id:t.id,kind:'owner-task',ownerTaskId:t.id,optional:t.optional,priority:t.priority??0,bucket:['work','work-items'].includes(t.kind)?'work':'idle',definitionOnly:t.phase==='needs_definition',planningOnly:t.kind==='planning',readOnly:!!t.availability?.checkOnly,text:t.instruction,group:(l.queue||[]).filter(q=>q.ownerTaskIds?.includes(t.id)&&['pending','blocked'].includes(q.status))}));}
 export function ownerTaskSnapshot(l,round){
  const tasks=(l.ownerTasks||[]).filter(t=>open(t)&&sameScope(l,t)&&(!round?.ownerTaskId||t.id===round.ownerTaskId)).sort((a,b)=>b.createdAt-a.createdAt).slice(0,3);
- return tasks.map(t=>Object.fromEntries(['id','revision','status','phase','kind','instruction','nextStep','nextAt','notBefore','finalAction','steps','stepIndex','completedSteps','destination','arrivalEventId','arrivalState','finalActionCallId','source','availability','planning','definitionAttempts','definitionNextAt','contractIssue'].filter(k=>t[k]!==undefined).map(k=>[k,t[k]])));
+ return tasks.map(t=>Object.fromEntries(['id','revision','status','phase','kind','instruction','nextStep','nextAt','notBefore','finalAction','steps','stepIndex','completedSteps','destination','arrivalEventId','arrivalState','finalActionCallId','source','availability','planning','journey','definitionAttempts','definitionNextAt','contractIssue'].filter(k=>t[k]!==undefined).map(k=>[k,t[k]])));
 }
 export function ownerTaskPlanningComplete(l,round,now){
  const task=(l.ownerTasks||[]).find(t=>t.id===round.ownerTaskId&&open(t)&&sameScope(l,t)&&t.kind==='planning');if(!task)return {completed:false};
@@ -236,18 +292,36 @@ export function ownerTaskPlanningComplete(l,round,now){
  if(!plans.length)return {completed:false,day:instance,issue:'missing-next-day-executable-plans'};
  const completed=completePlanning(task,plans,instance,now,round.id);return {completed,day:instance,planIds:plans.map(plan=>plan.id),nextAt:task.nextAt};
 }
+/** Repair only the known global-plan cancellation of a recurring local obligation. */
+export function reconcilePlanningObligations(l,now){
+ const restoredIds=[];
+ for(const task of [...l.ownerTasks||[]].sort((a,b)=>(b.createdAt||0)-(a.createdAt||0))){
+  if(task.status!=='cancelled'||task.kind!=='planning'||!sameScope(l,task)||!dailyPlanning(task.instruction)||uncertainTask(l,task))continue;
+  if((l.ownerTasks||[]).some(other=>open(other)&&sameScope(l,other)&&other.kind==='planning'&&dailyPlanning(other.instruction)))break;
+  const last=task.history?.at(-1),reason=String(last?.instruction||'');
+  if(last?.kind!=='owner-changed-plan'||!/(?:去|出门|回家|逛|吃饭|白米饭|采购|买)/.test(reason)||/(?:取消|停止|不要|不用|不必|别|每天|每晚|每日|规划|23\s*[:：]\s*45)/.test(reason))continue;
+  if((l.ownerInstructions||[]).some(row=>row.at>last.at&&/(?:取消|停止|不要|不用|不必|别).*(?:每天|每晚|每日|规划|23\s*[:：]\s*45)/.test(row.text||'')))continue;
+  let instance=day(now);if(planningAt(instance)<=now)instance=shiftDay(instance,1);
+  const state=planningState(task,now);state.day=instance;state.businessDay=shiftDay(instance,1);state.restoredAt=now;
+  task.status='active';task.phase='pending';task.nextAt=planningAt(instance);task.notBefore=0;task.finalAction=null;task.steps=[];
+  record(task,{kind:'recurring-planning-restored',cancelledAt:last.at,reason:'legacy-global-plan-cancel',futureOnly:true,noHistoricalShare:true,localOnly:true,communicationStatus:'not-claimed'},now);restoredIds.push(task.id);
+ }
+ return {changed:restoredIds.length,restoredIds};
+}
 /** Idempotent local reconciliation of existing task records, never a scan of historical chat. */
 export function reconcileOwnerTasks(l,data,now){
- let changed=0;
+ let changed=reconcilePlanningObligations(l,now).changed;
  for(const task of l.ownerTasks||[]){
   if(!open(task)||!sameScope(l,task)||uncertainTask(l,task))continue;
   task.history??=[];task.receipts??=[];task.completedSteps??=[];task.steps??=[];
+  if(task.kind==='journey')continue;
   if(dailyPlanning(task.instruction)&&!['travelling','working','waiting_event'].includes(task.phase)&&!task.completedSteps.length&&!task.receipts.length){
    if(task.kind!=='planning'){
     task.previousContract??={kind:task.kind,phase:task.phase,nextAt:task.nextAt,finalAction:clone(task.finalAction),steps:clone(task.steps)};
     task.kind='planning';task.phase='pending';task.scheduleRequired=false;task.finalAction=null;task.steps=[];planningState(task,now);record(task,{kind:'local-planning-contract',noWorldMutation:true},now);changed++;
    }
-   const state=planningState(task,now),existing=(l.planHistory||[]).filter(row=>day(row.at)===state.day),plans=planningPlans(l,task,state.day,existing,now);
+   const state=planningState(task,now);if(state.restoredAt&&now<planningAt(state.day))continue;
+   const existing=(l.planHistory||[]).filter(row=>day(row.at)===state.day&&(!state.restoredAt||row.at>=state.restoredAt)),plans=planningPlans(l,task,state.day,existing,now);
    if(plans.length&&completePlanning(task,plans,state.day,now)){changed++;}
    continue;
   }
@@ -266,7 +340,7 @@ export function reconcileOwnerTasks(l,data,now){
 export function endOwnerTaskRound(l,round,valid,now){
  const task=(l.ownerTasks||[]).find(t=>t.id===round.ownerTaskId&&open(t)&&sameScope(l,t));if(!task)return;
  if(round.id&&task.lastEndedRoundId===round.id)return;task.lastEndedRoundId=round.id;
- task.checks++;task.lastCheckedAt=now;
+ task.checks++;task.lastCheckedAt=round.definitionOnly&&task.kind==='journey'&&task.phase==='pending'&&task.journey.definedAt>=round.startedAt?0:now;
  if(task.kind==='planning'){
   planningState(task,now);
   const result=valid?ownerTaskPlanningComplete(l,round,now):{completed:false};

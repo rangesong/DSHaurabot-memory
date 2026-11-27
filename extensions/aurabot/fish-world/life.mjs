@@ -1,5 +1,5 @@
 import {isExactFishIdentity} from './action-sequence.mjs';
-import {rememberOwnerTurn,taskForExecution,ownerTaskGuard,noteOwnerTaskResult,advanceOwnerTasks,endOwnerTaskRound,worldToolName,reconcileOwnerTasks,defineOwnerTask} from './owner-tasks.mjs';
+import {rememberOwnerTurn,taskForExecution,ownerTaskGuard,noteOwnerTaskResult,advanceOwnerTasks,endOwnerTaskRound,worldToolName,reconcileOwnerTasks,defineOwnerTask,registerJourney} from './owner-tasks.mjs';
 import {completedWindowRound,bindWindow,buildTaskPrompt} from './world-window.mjs';
 import {advancePlans,preparePlanChanges,applyPlanChanges,finishPlanCheck,planEvidenceFingerprint} from './plans.mjs';
 import {candidates,admission,reserveRound,effectiveNow,quotaAlert,closeOldAlerts,isQuotaDelivery,observeSatisfiedEvents,estimateTokens} from './governance.mjs';
@@ -82,23 +82,34 @@ export class LifeEngine {
     if(task&&!task.optional&&this.l.round)void this.host.cancel(this.l.round.sessionId).catch(()=>{});return task;
   }
   snapshot(){const l=structuredClone(this.l);for(const [key,visit]of this.alertVisits){const a=l.alerts?.find(a=>a.key===key);if(a){a.repeatCount+=visit.count;a.lastSeenAt=visit.lastSeenAt;}}return {...l,usage:budget(l,effectiveNow(l,this.clock())),costSummary:costSummary(l,this.clock()),settings:this.cfg,locked:!!this.lock};}
-  control(action,text=''){
+  control(action,text='',{sessionId}={}){
     if(action==='plan'&&(this.l.ownerTasks||[]).some(t=>t.status==='active'&&t.instruction===clean(text)))return;
     const changes={pauseIdle:{idleEnabled:false},pauseAuto:{autonomy:false},pauseShare:{sharing:false},observe:{observeOnly:true},stop:{stopped:true},resume:{stopped:false,autonomy:true,idleEnabled:true,observeOnly:false},share:{sharing:true}};
     if(!changes[action]&&!['plan','probe'].includes(action))throw Error('未知控制');
     this.change((l,d)=>{reconcileSharingPolicy(l,!!({...defaults,...this.settings()}.sharing),this.clock());Object.assign(l.controls,changes[action]||{});l.revision++;
       if(action==='probe'){if(l.round)throw Error('后台正在忙碌');l.recovery=true;l.verification=true;l.verificationInstruction=clean(text).slice(0,500);l.backoffUntil=0;}
       if(action==='plan'){
-        for(const t of l.ownerTasks||[])if(t.status==='active'){t.status='cancelled';t.phase='cancelled';t.revision++;t.history.push({at:this.clock(),kind:'owner-changed-plan',instruction:clean(text)});}
+        const cancelDaily=/(?:取消|停止|不要|不用|不再|别).{0,20}(?:(?:每天|每晚|每日|23[:：]45).{0,12}(?:规划|计划|安排)|(?:规划|计划|安排).{0,12}(?:每天|每晚|每日|23[:：]45))/.test(text);
+        const context=sessionId&&l.ownerTaskContexts?.[sessionId],keptJourney=(l.ownerTasks||[]).find(t=>t.status==='active'&&t.kind==='journey'&&t.journey?.registeredSessionId===sessionId&&t.journey?.registeredTurnKey&&t.journey.registeredTurnKey===context?.key);
+        for(const t of l.ownerTasks||[])if(t.status==='active'&&t.id!==keptJourney?.id&&(t.kind!=='planning'||cancelDaily)){t.status='cancelled';t.phase='cancelled';t.revision++;t.history.push({at:this.clock(),kind:'owner-changed-plan',instruction:clean(text)});}
         l.ownerInstructionRevision=(l.ownerInstructionRevision||0)+1;(l.ownerInstructions??=[]).push({text:clean(text).slice(0,2000),at:this.clock(),revision:l.ownerInstructionRevision});l.ownerInstructions=l.ownerInstructions.slice(-20);
         for(const p of l.plans)if(planOpen(p.status)){const before=structuredClone(p);p.status='cancelled';p.revision=(p.revision||0)+1;p.updatedAt=this.clock();p.changeReason='主人改变安排';(l.planHistory??=[]).push({at:this.clock(),op:'owner-superseded',id:p.id,before});}
         for(const q of l.queue)if(!terminal(q.status)&&q.bucket==='idle')q.status='cancelled';
-        synthetic(d,'owner',clean(text).slice(0,2000),this.clock());
+        if(!keptJourney)synthetic(d,'owner',clean(text).slice(0,2000),this.clock());
       }
       if(l.round&&['stop','pauseAuto','observe','plan','pauseIdle'].includes(action)){l.round.status='stopping';l.round.stopReason='主人更新了控制或安排';}
       reconcileSharingPolicy(l,!!({...defaults,...this.settings()}.sharing),this.clock());
     });
     if(this.l.round?.status==='stopping')void this.host.cancel(this.l.round.sessionId).catch(()=>{});
+  }
+  journey(input,{sessionId,sourceKind='owner'}={}){
+    const ownerTurnAt=this.l.ownerTaskContexts?.[sessionId]?.at||0;
+    let result;this.change(l=>{result=registerJourney(l,input,{sessionId,identity:this.identity(),now:this.clock(),data:this.bridge.data,sourceKind});
+      if(sourceKind==='owner'&&ownerTurnAt>0)for(const event of l.queue)if(event.kind==='owner'&&event.provenance?.source==='owner-control'&&event.t>=ownerTurnAt&&event.t<=this.clock()&&['pending','blocked'].includes(event.status)){event.status='cancelled';event.changeReason='当前明确旅程任务已接管同轮安排，原指令保留';event.journeyTaskId=result.task.id;}
+      if(!result.reused&&!result.task.optional&&l.round){l.revision++;l.round.status='stopping';l.round.stopReason='主人已登记新的出行目的，先交接当前后台回合';}
+    });
+    if(this.l.round?.status==='stopping')void this.host.cancel(this.l.round.sessionId).catch(()=>{});
+    return result;
   }
   fault(key,message){
     if(key.startsWith('budget-'))return this.noteQuotaAlert(key.slice(7));
@@ -218,7 +229,7 @@ export class LifeEngine {
   defineTask(input,{sessionId}={}){
     const r=this.l.round;if(!r||r.sessionId!==sessionId||r.status!=='running')throw Error('不是当前有效后台定义回合');
     if(this.lock)return {ok:false,retryable:true,message:'等待当前世界读取返回后再定义，不并发猜步骤。'};
-    try{return this.change(l=>defineOwnerTask(l,input,{sessionId,background:true,taskId:l.round?.ownerTaskId,now:this.clock(),data:this.bridge.data}));}
+    try{return this.change(l=>{const result=defineOwnerTask(l,input,{sessionId,background:true,taskId:l.round?.ownerTaskId,now:this.clock(),data:this.bridge.data});if(input.action==='complete_observation'&&result.task?.status==='completed'&&result.task?.journey?.observation)l.round.journeyObservationCompleted=true;return result;});}
     catch(error){
       if(!r.definitionOnly)throw error;
       const failures=(r.taskDefinitionErrors||0)+1,stop=error.wait===true||error.retryable===false||failures>=2;
@@ -276,6 +287,7 @@ export class LifeEngine {
     const deferred=!isBackground&&isOwner&&mutating(name,exec.arguments)&&this.l.ownerTaskContexts?.[exec.agent?.session?.id]?.deferred;
     if(deferred)this.ownerTurn(deferred.text,{sessionId:exec.agent.session.id,turnToken:deferred.turnKey,confirmedWorld:true});
     const taskDenied=ownerTaskGuard(this.l,this.bridge.data,exec,isBackground,now);if(taskDenied)return taskDenied;
+    if(!isBackground&&isOwner&&name===WORLD+'world_go'&&!taskForExecution(this.l,exec))return '这次出发尚未绑定要办的事；先用 fish_life_journey 登记 goal、真实 destination 和 arrivalStep，再按原工具出发。到了只算走完路，后续目的仍保留；不要重复提交出发。';
     if(isBackground){
       if(!r||r.sessionId!==exec.agent?.session?.id||r.status!=='running'||r.revision!==this.l.revision||this.cfg.stopped||!this.cfg.autonomy||this.cfg.observeOnly)return '本轮已停止、会话不匹配或主人改变安排';
       if(mutating(name,exec.arguments)&&(r.definitionOnly||r.planningOnly||r.availabilityOnly))return '本轮只核对空位、登记任务时间步骤或本地日程，不提交世界变更；原有未知结果和分享证据规则保持有效';
@@ -370,7 +382,7 @@ export class LifeEngine {
         }
         l.nextIdle=Math.max(now+this.cfg.idleMs,timestamp(report.nextAt)||now+this.cfg.idleMs);
         if(r.readOnly){l.recovery=false;l.verification=false;}
-        const localOnly=r.readOnly||r.kind==='recovery'||r.definitionOnly||r.planningOnly||r.availabilityOnly,sharing=l.sharingPolicy.sharing;
+        const localOnly=r.readOnly||r.kind==='recovery'||r.definitionOnly&&!r.journeyObservationCompleted||r.planningOnly||r.availabilityOnly,sharing=l.sharingPolicy.sharing;
         if(report.share&&(localOnly||!sharing||['urgent','important'].includes(report.importance))){
           const options={fishId:this.bridge.data.fishId,round:r,report,now};
           sharingEvidence=localOnly||!sharing?previewShareEvidence(l,options):claimShareEvidence(l,options);

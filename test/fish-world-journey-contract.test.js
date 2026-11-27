@@ -1,0 +1,93 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import {newLife,enqueue} from '../extensions/aurabot/fish-world/state.mjs';
+import {registerJourney,rememberOwnerTurn,taskForExecution,ownerTaskGuard,defineOwnerTask,noteOwnerTaskResult,advanceOwnerTasks,ownerTaskCandidates,ownerTaskSnapshot,endOwnerTaskRound,reconcileOwnerTasks,reconcilePlanningObligations} from '../extensions/aurabot/fish-world/owner-tasks.mjs';
+
+const W='mcp__fish-world__world_',start=Date.parse('2026-11-27T12:00:00+08:00'),identity={owner:'synthetic-owner',persona:'synthetic-persona'};
+const purpose={goal:'到合成超市补齐食材',destination:'fixture-shop',arrivalStep:'按当前真实货架选项购买两份合成食材'};
+function fixture(){
+ const l={...newLife(start),...identity},data={life:l,state:{where:{kind:'home'}},at:{state:start},fishId:'synthetic#1'};let now=start,sequence=0;const sessionId='synthetic-private';
+ const f={l,data,sessionId,get now(){return now;},time(at){now=at;},register(input=purpose,ctx={}){const result=registerJourney(l,input,{identity,sessionId,now,data,...ctx});return l.ownerTasks.find(t=>t.id===result.task.id);},exec(name,args={}){return {name:W+name,arguments:args,agent:{session:{id:sessionId}}};},row(task,name,args,result,status='confirmed',extra={}){const row={id:'synthetic-receipt-'+(++sequence),tool:W+name,args:JSON.stringify(args),result,status,isError:status!=='confirmed',at:now,finishedAt:now,sessionId,ownerTaskId:task?.id||null,...extra};l.journal.push(row);noteOwnerTaskResult(l,data,row,now);return row;},define(task,steps){return defineOwnerTask(l,{id:task.id,expectedRevision:task.revision,steps},{sessionId,now});},arrive(task){now+=600000;enqueue(data,{kind:'arrive',t:now,text:'到了合成超市'},now);return task;}};
+ return f;
+}
+const outbound=(f,t)=>f.row(t,'go',{place:purpose.destination,by:'walk'},'好的。12:01 出发：步行到合成超市（9 分钟），12:10 到合成超市。');
+const buyStep={tool:'world_do',arguments:'{"id":"fixture-food","count":2}',nextStep:'购买两份合成食材'};
+
+test('an explicit journey keeps its purpose through questions and arrival, then only exact real actions complete it',()=>{
+ const f=fixture(),t=f.register({...purpose,steps:[buyStep]});assert.equal(t.kind,'journey');assert.equal(t.steps.length,1);assert.equal(t.steps[0].tool,W+'go');assert.equal(t.journey.suggestedSteps.length,1);
+ assert.match(ownerTaskGuard(f.l,f.data,f.exec('do',{id:'fixture-food',count:2}),false,f.now),/原出发目的/);assert.throws(()=>f.define(t,[buyStep]),/到达后/);
+ assert.equal(ownerTaskGuard(f.l,f.data,f.exec('go',{place:purpose.destination,by:'walk'}),false,f.now),undefined);outbound(f,t);assert.equal(t.phase,'travelling');
+ rememberOwnerTurn(f.l,identity,{text:'东西买了吗？',sessionId:f.sessionId,turnKey:2},f.now);assert.equal(f.l.ownerTaskContexts[f.sessionId].taskId,null);assert.equal(taskForExecution(f.l,f.exec('now')).id,t.id);assert.equal(taskForExecution(f.l,{...f.exec('now'),agent:{session:{id:'foreign'}}}),undefined);
+ f.arrive(t);assert.equal(t.phase,'needs_definition');assert.equal(t.status,'active');assert.equal(t.nextStep,purpose.arrivalStep);assert.equal(t.completedSteps.length,1);assert.equal(t.journey.goal,purpose.goal);assert.equal(t.finalAction,null);assert.equal(f.l.queue.at(-1).ownerTaskIds[0],t.id);
+ assert.match(ownerTaskGuard(f.l,f.data,f.exec('do',{id:'fixture-food',count:2}),false,f.now),/尚未登记|未来时间/);f.define(t,[buyStep]);f.row(t,'do',{id:'fixture-food',count:1},'买了一份');assert.equal(t.status,'active');f.row(t,'do',{id:'fixture-food',count:2},'买了两份');assert.equal(t.status,'completed');assert.equal(t.instruction,purpose.goal);assert.equal(t.journey.arrivalStep,purpose.arrivalStep);
+ rememberOwnerTurn(f.l,identity,{text:'你好',sessionId:f.sessionId,turnKey:3},f.now);assert.equal(taskForExecution(f.l,f.exec('go',{place:purpose.destination})),undefined,'a completed journey is never revived by a later question');
+});
+
+test('route options never become a departure, and arrival requires exact fresh identity rather than clock alone',()=>{
+ const f=fixture(),t=f.register();const before=structuredClone(t);f.row(t,'go',{place:purpose.destination},'去合成超市有 2 种走法，world_go 时 by 填其中一个：\n· 步行 walk —— 12:10 到合成超市\n· 打车 taxi —— 12:05 到合成超市');assert.deepEqual(t,before);
+ outbound(f,t);f.time(start+600000);for(const [where,at]of [[{kind:'trip',place:{id:purpose.destination}},f.now],[{kind:'place',place:{id:'wrong-place'}},f.now],[{kind:'place',place:{id:purpose.destination}},start],[{kind:'place',place:{id:purpose.destination}},f.now+1]]){f.data.state.where=where;f.data.at.state=at;advanceOwnerTasks(f.l,f.data,f.now);assert.equal(t.phase,'travelling');}
+ enqueue(f.data,{kind:'arrive',text:'到了合成超市旁边',t:f.now},f.now);assert.equal(t.phase,'travelling');f.data.state.where={kind:'place',place:{id:purpose.destination}};f.data.at.state=f.now;advanceOwnerTasks(f.l,f.data,f.now);assert.equal(t.phase,'needs_definition');assert.equal(t.status,'active');assert.equal(t.arrivalState.placeId,purpose.destination);
+});
+
+test('an explicit immediate indoor success completes only the travel leg',()=>{
+ const f=fixture(),t=f.register({...purpose,destination:'厨房',arrivalStep:'根据现场选项处理厨房物品'});f.row(t,'go',{place:'厨房'},'好的，你走进了厨房。\n厨房（world_do）：\n· 倒杯热水 hot-water');assert.equal(t.phase,'needs_definition');assert.equal(t.status,'active');assert.equal(t.completedSteps.length,1);assert.equal(t.journey.stage,'arrival-purpose');assert.equal(t.receipts.length,1);
+});
+
+test('fresh exact cached presence starts at the arrival purpose without inventing a travel receipt',()=>{
+ const f=fixture();f.data.state.where={kind:'place',place:{id:purpose.destination}};const t=f.register();assert.equal(t.phase,'needs_definition');assert.equal(t.journey.stage,'arrival-purpose');assert.deepEqual(t.receipts,[]);assert.deepEqual(t.completedSteps,[]);assert.deepEqual(t.steps,[]);assert.equal(t.journey.arrivalEvidence.kind,'state');
+ const stale=fixture();stale.data.state.where={kind:'place',place:{id:purpose.destination}};stale.data.at.state=start-180001;assert.equal(stale.register().phase,'pending');
+});
+
+test('an observe-only journey can finish locally only after a successful current-session onsite read',()=>{
+ const f=fixture(),input={goal:'到合成影院看看排片',destination:'fixture-cinema',arrivalStep:'读取现场排片和门厅说明',completionType:'observe'};f.data.state.where={kind:'place',place:{id:input.destination}};const t=f.register(input),base=()=>({id:t.id,expectedRevision:t.revision,action:'complete_observation',summary:'现场有两场合成场次',evidenceIds:['missing']});
+ assert.throws(()=>defineOwnerTask(f.l,base(),{sessionId:f.sessionId,now:f.now,data:f.data}),/精确 evidenceIds/);
+ const foreign=f.row(null,'now',{},'你在：合成影院','confirmed',{sessionId:'foreign'});assert.throws(()=>defineOwnerTask(f.l,{...base(),evidenceIds:[foreign.id]},{sessionId:f.sessionId,now:f.now}),/精确 evidenceIds/);
+ const read=f.row(t,'now',{},'11-27 周五 12:00 · 晴 8°C\n你在：合成影院\n身体：精神很好');rememberOwnerTurn(f.l,identity,{text:'看到什么了？',sessionId:f.sessionId,turnKey:3},f.now);defineOwnerTask(f.l,{...base(),evidenceIds:[read.id]},{sessionId:f.sessionId,now:f.now,data:f.data});assert.equal(t.status,'completed');assert.equal(t.journey.observation.localOnly,true);assert.equal(t.journey.observation.communicationStatus,'not-claimed');assert.equal(t.completedSteps.length,0,'a read does not fabricate an action receipt');
+ const action=fixture();action.data.state.where={kind:'place',place:{id:purpose.destination}};const a=action.register();const aRead=action.row(a,'now',{},'合成现场');assert.throws(()=>defineOwnerTask(action.l,{id:a.id,expectedRevision:a.revision,action:'complete_observation',summary:'看过',evidenceIds:[aRead.id]},{sessionId:action.sessionId,now:action.now}),/实际行动/);
+ for(const goal of ['到店里购买食物','去上班','去问老板有何食材'])assert.throws(()=>fixture().register({...input,goal}),/不能登记成只观察/);
+});
+
+test('unknown or executing travel cannot be replayed or replaced, while a known journey can be explicitly handed over',()=>{
+ const f=fixture(),t=f.register();outbound(f,t);assert.throws(()=>f.register({...purpose,destination:'other-shop'}),/replaceTaskId/);const next=f.register({...purpose,destination:'other-shop',replaceTaskId:t.id});assert.equal(t.status,'cancelled');assert.equal(t.history.at(-1).kind,'journey-explicitly-replaced');assert.equal(next.status,'active');assert.equal(t.journey.goal,purpose.goal);
+ const u=fixture(),unknown=u.register();u.row(unknown,'go',{place:purpose.destination},'timeout','uncertain');assert.throws(()=>u.register({...purpose,destination:'other-shop',replaceTaskId:unknown.id}),/未知|执行中|等待完成/);assert.match(ownerTaskGuard(u.l,u.data,u.exec('go',{place:purpose.destination}),false,u.now),/未确认/);assert.throws(()=>u.define(unknown,[buyStep]),/未确认变更/);
+ const e=fixture(),executing=e.register();e.l.journal.push({id:'inflight',ownerTaskId:executing.id,status:'executing',tool:W+'go',args:'{}'});assert.throws(()=>e.register({...purpose,destination:'other-shop',replaceTaskId:executing.id}),/未知|执行中/);
+});
+
+test('registration is scoped, idempotent, and records the current owner turn for same-turn control handoff',()=>{
+ const f=fixture();rememberOwnerTurn(f.l,identity,{text:'东西买了吗？',sessionId:f.sessionId,turnKey:'owner-turn'},f.now);const key=f.l.ownerTaskContexts[f.sessionId].key,t=f.register();assert.equal(t.journey.registeredTurnKey,key);assert.equal(f.l.ownerTaskContexts[f.sessionId].key,key);const repeated=f.register();assert.equal(repeated.id,t.id);assert.equal(f.l.ownerTasks.length,1);assert.equal(ownerTaskSnapshot(f.l)[0].journey.goal,purpose.goal);
+ assert.throws(()=>registerJourney(f.l,purpose,{sessionId:f.sessionId,identity:{...identity,persona:'other'},now:f.now}),/当前主人/);const after=structuredClone(f.l.ownerTasks);reconcileOwnerTasks(f.l,f.data,f.now);assert.deepEqual(f.l.ownerTasks,after);
+ assert.ok(process.env.THINKSTAR_TEST_TMP);const file=path.join(fs.mkdtempSync(path.join(process.env.THINKSTAR_TEST_TMP,'journey-contract-')),'synthetic.json');fs.writeFileSync(file,JSON.stringify(f.l));const restored=JSON.parse(fs.readFileSync(file,'utf8'));assert.equal(taskForExecution(restored,f.exec('now')).journey.destination,purpose.destination);
+});
+
+test('a world schedule journey is optional and cannot displace an unfinished owner purpose',()=>{
+ const f=fixture(),input={...purpose,goal:'自主去合成地点看展',arrivalStep:'读取当前展览说明',completionType:'observe'},scheduled=f.register(input,{sourceKind:'world-schedule'});assert.equal(scheduled.optional,true);assert.equal(scheduled.priority,3);const same=f.register(input,{sourceKind:'owner'});assert.equal(same.id,scheduled.id);assert.equal(same.optional,false);assert.equal(same.priority,0);assert.equal(same.history.at(-1).kind,'confirmed-by-owner');assert.equal(same.history.at(-1).previousSource.kind,'world-schedule');assert.throws(()=>f.register(input,{sourceKind:'world-schedule'}),/主人目的/);assert.equal(same.priority,0);
+ const owner=fixture(),t=owner.register();assert.throws(()=>owner.register({...purpose,replaceTaskId:t.id},{sourceKind:'world-schedule'}),/主人目的/);assert.equal(t.status,'active');assert.equal(owner.l.ownerTasks.length,1);
+});
+
+test('observation completion rejects another current location while accepting newer onsite now over stale trip cache',()=>{
+ const f=fixture(),t=f.register({...purpose,goal:'到合成超市看看陈列',arrivalStep:'读取当前货架说明',completionType:'observe'});outbound(f,t);f.arrive(t);const older=f.row(t,'now',{},'11-27 周五 12:10 · 晴 8°C\n你在：合成超市\n身体：精神很好'),read=f.row(t,'now',{},'11-27 周五 12:10 · 晴 8°C\n你在：别处商店\n身体：精神很好'),input=()=>({id:t.id,expectedRevision:t.revision,action:'complete_observation',summary:'查看陈列',evidenceIds:[read.id]});
+ assert.throws(()=>defineOwnerTask(f.l,{...input(),evidenceIds:[older.id]},{sessionId:f.sessionId,now:f.now,data:f.data}),/最新/,'a prior onsite read cannot supersede a newer read from elsewhere');
+ read.result='11-27 周五 12:10 · 晴 8°C\n你在：别处商店 · 前排货架\n身体：精神很好';f.data.state.where={kind:'place',place:{id:purpose.destination}};f.data.at.state=f.now;assert.throws(()=>defineOwnerTask(f.l,input(),{sessionId:f.sessionId,now:f.now,data:f.data}),/所在地/,'another store with the same subarea still fails, even with newer matching cache');
+ f.data.at.state=f.now-1000;assert.throws(()=>defineOwnerTask(f.l,input(),{sessionId:f.sessionId,now:f.now,data:f.data}),/所在地/);read.result='11-27 周五 12:10 · 晴 8°C\n你在：合成超市\n身体：精神很好';f.data.state.where={kind:'place',place:{id:'other'}};f.data.at.state=f.now;assert.throws(()=>defineOwnerTask(f.l,input(),{sessionId:f.sessionId,now:f.now,data:f.data}),/所在地/,'an equally new structural mismatch wins');
+ read.result='11-27 周五 12:10 · 晴 8°C\n你在：合成超市 · 前排货架\n身体：精神很好';f.data.state.where={kind:'trip',place:{id:purpose.destination}};f.data.at.state=f.now-1000;defineOwnerTask(f.l,input(),{sessionId:f.sessionId,now:f.now,data:f.data});assert.equal(t.status,'completed','the exact same store may complete from a named subarea');
+});
+
+test('a final journey return arrival remains a real pending event carrying bounded purpose evidence',()=>{
+ const f=fixture(),t=f.register();outbound(f,t);f.arrive(t);f.define(t,[buyStep,{tool:'world_go',arguments:'{"place":"home"}',nextStep:'带东西回家'}]);f.row(t,'do',{id:'fixture-food',count:2},'购买成功');const back=f.row(t,'go',{place:'home',by:'walk'},'好的。12:11 出发：步行到家（4 分钟），12:15 到家。');f.time(start+900000);enqueue(f.data,{kind:'arrive',t:f.now,text:'到了家'},f.now);const event=f.l.queue.at(-1);assert.equal(t.status,'completed');assert.equal(event.status,'pending');assert.deepEqual(event.completedOwnerTaskIds,[t.id]);assert.deepEqual(event.completedPurpose,{taskId:t.id,goal:purpose.goal,receiptIds:t.receipts.map(r=>r.id)});assert.ok(event.completedPurpose.receiptIds.includes(back.id));assert.equal(event.provenance.trusted,true);assert.equal(event.text,'到了家');assert.equal(event.t,f.now);assert.equal(event.kind,'arrive');
+});
+
+test('restoring daily planning never creates duplicate obligations and selects the latest eligible cancelled contract',()=>{
+ const f=fixture(),t=rememberOwnerTurn(f.l,identity,{text:'你每天23:45规划明天在鱼的世界的安排',sessionId:f.sessionId,turnKey:1},f.now),old=structuredClone(t);Object.assign(old,{id:'older',createdAt:start-86400000,status:'cancelled',phase:'cancelled',history:[{kind:'owner-changed-plan',at:start-1000,instruction:'出门去合成影院看看'}]});f.l.ownerTasks.push(old);assert.equal(reconcilePlanningObligations(f.l,f.now).changed,0);t.status='cancelled';t.phase='cancelled';t.history.push({kind:'owner-changed-plan',at:start-1000,instruction:'出门去合成影院看看'});const result=reconcilePlanningObligations(f.l,f.now);assert.deepEqual(result.restoredIds,[t.id]);assert.equal(old.status,'cancelled');assert.equal(reconcilePlanningObligations(f.l,f.now).changed,0);
+});
+
+test('successful arrival-stage definition releases only the journey stage cooldown, retaining the original contract',()=>{
+ const f=fixture(),t=f.register();outbound(f,t);f.arrive(t);const r={id:'definition-round',ownerTaskId:t.id,startedAt:f.now,definitionOnly:true,report:{}};f.l.round={...r,sessionId:'synthetic-bg'};t.lastCheckedAt=f.now-1;defineOwnerTask(f.l,{id:t.id,expectedRevision:t.revision,steps:[buyStep]},{sessionId:'synthetic-bg',background:true,taskId:t.id,now:f.now});endOwnerTaskRound(f.l,r,true,f.now+1000);assert.equal(t.lastCheckedAt,0);assert.equal(t.phase,'pending');assert.equal(t.journey.stageVersion,1);assert.equal(ownerTaskCandidates(f.l,f.now+1000,f.data)[0].ownerTaskId,t.id);assert.equal(t.journey.goal,purpose.goal);
+});
+
+test('only legacy global cancellation of recurring planning is restored, with a future trigger and no historical completion or share',()=>{
+ const f=fixture(),planning=rememberOwnerTurn(f.l,identity,{text:'你每天23:45规划明天在鱼的世界的安排',sessionId:f.sessionId,turnKey:1},f.now);planning.status='cancelled';planning.phase='cancelled';planning.history.push({kind:'owner-changed-plan',at:f.now-1000,instruction:'吃完饭出门去合成影院看看然后回家'});const oldHistory=structuredClone(planning.history),result=reconcilePlanningObligations(f.l,f.now);assert.deepEqual(result.restoredIds,[planning.id]);assert.equal(planning.nextAt,Date.parse('2026-11-27T23:45:00+08:00'));assert.deepEqual(planning.history.slice(0,-1),oldHistory);assert.equal(planning.history.at(-1).noHistoricalShare,true);assert.equal(reconcilePlanningObligations(f.l,f.now+1).changed,0);
+ f.l.plans.push({id:'old-next-day',status:'pending',businessAt:Date.parse('2026-11-28T08:00:00+08:00'),nextAt:Date.parse('2026-11-28T08:00:00+08:00')});f.l.planHistory.push({id:'old-next-day',op:'create',at:f.now-100});reconcileOwnerTasks(f.l,f.data,f.now+1);assert.equal(planning.nextAt,Date.parse('2026-11-27T23:45:00+08:00'),'restoration does not consume old plans or create a past completion');assert.deepEqual(planning.planning.completed,{});
+ for(const change of [{status:'completed'},{kind:'activity'},{owner:'foreign'},{history:[{kind:'owner-cancelled',at:start,instruction:'取消每日规划'}]},{history:[{kind:'owner-changed-plan',at:start,instruction:'不用每天规划了，去买东西'}]},{history:[{kind:'owner-changed-plan',at:start,instruction:'调整安排'}]}]){const other=structuredClone(planning);Object.assign(other,{id:'other',status:'cancelled',phase:'cancelled',history:oldHistory},change);f.l.ownerTasks=[other];assert.equal(reconcilePlanningObligations(f.l,f.now).changed,0,JSON.stringify(change));}
+});

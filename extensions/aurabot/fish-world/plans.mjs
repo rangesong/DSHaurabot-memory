@@ -7,8 +7,47 @@ import {proofOfPlanProgress} from './plan-progress.mjs';
 const hash=x=>createHash('sha256').update(JSON.stringify(x)).digest('hex');
 const norm=x=>String(x??'').normalize('NFKC').replace(/\s+/g,' ').trim();
 const unique=x=>[...new Set(x||[])];
-const fields=['goal','reason','nextStep','topic','subject','stage','businessAt','windowStart','windowEnd','nextAt','expiresAt','trigger','waitCondition','status','constraints','semanticAliases','semanticIdentity','sourceEventIds','refinements'];
+const fields=['goal','reason','nextStep','topic','subject','stage','businessAt','windowStart','windowEnd','nextAt','expiresAt','trigger','waitCondition','status','constraints','semanticAliases','semanticIdentity','sourceEventIds','refinements','destination','steps','expectedAction'];
 const terminalOps={complete:'completed',expire:'expired',abandon:'abandoned',block:'blocked',supersede:'superseded',merge:'merged'};
+const object=value=>!!value&&typeof value==='object'&&!Array.isArray(value)&&[Object.prototype,null].includes(Object.getPrototypeOf(value));
+const boundedText=(value,max)=>typeof value==='string'&&value.trim().length>0&&value.length<=max;
+const executionKeys=['destination','steps','expectedAction'];
+const executionCanonical=value=>Array.isArray(value)?value.map(executionCanonical):object(value)?Object.fromEntries(Object.keys(value).sort().map(key=>[key,executionCanonical(value[key])])):value;
+function jsonArguments(value){
+ if(typeof value==='string'){if(value.length>12000)throw Error('计划动作参数过长');try{value=JSON.parse(value);}catch{throw Error('计划动作参数需要完整 JSON 对象');}}
+ if(!object(value)||!Object.keys(value).length)throw Error('计划动作参数需要非空 JSON 对象');
+ const seen=new Set();let nodes=0;
+ function check(item,depth){
+  if(++nodes>512||depth>6)throw Error('计划动作参数结构过大');
+  if(item===null||typeof item==='boolean')return;
+  if(typeof item==='string'){if(item.length>8000)throw Error('计划动作参数过长');return;}
+  if(typeof item==='number'&&Number.isFinite(item))return;
+  if(typeof item!=='object'||!item||!Array.isArray(item)&&!object(item)||seen.has(item))throw Error('计划动作参数必须是有限 JSON 数据');
+  if(Object.values(Object.getOwnPropertyDescriptors(item)).some(d=>d.get||d.set))throw Error('计划动作参数不得包含访问器');
+  seen.add(item);const keys=Object.keys(item);if(keys.length>64)throw Error('计划动作参数字段过多');
+  for(const key of keys){if(['__proto__','prototype','constructor'].includes(key))throw Error('计划动作参数含保留字段');check(item[key],depth+1);}seen.delete(item);
+ }
+ check(value,0);if(Buffer.byteLength(JSON.stringify(value))>8192)throw Error('计划动作参数过长');return structuredClone(value);
+}
+function executionStep(value){
+ if(!object(value)||Object.keys(value).some(key=>!['tool','arguments','args','nextStep','waitFor','eventText'].includes(key))||Object.hasOwn(value,'arguments')&&Object.hasOwn(value,'args'))throw Error('计划动作结构无效');
+ const match=/^(?:mcp__fish-world__)?world_(go|do|say|friends|update)$/.exec(value.tool||'');if(!match)throw Error('计划动作必须是明确的世界变更工具');
+ const tool='mcp__fish-world__world_'+match[1],args=jsonArguments(value.arguments??value.args);
+ if(match[1]==='go'&&!boundedText(args.place,160)||match[1]==='do'&&!boundedText(args.id,160)||match[1]==='say'&&(!boundedText(args.fish,160)||!boundedText(args.text,3000))||match[1]==='friends'&&(!boundedText(args.action,40)||args.action==='list'||!boundedText(args.fish,160))||match[1]==='update'&&!boundedText(args.outfit,160))throw Error('计划动作缺少实际目标，或使用了只读动作');
+ if(value.nextStep!==undefined&&!boundedText(value.nextStep,1000)||value.eventText!==undefined&&!boundedText(value.eventText,1000)||value.waitFor!==undefined&&!['receipt','arrival','done','settlement'].includes(value.waitFor))throw Error('计划动作的后续条件无效');
+ const result={tool,arguments:args};for(const key of ['nextStep','waitFor','eventText'])if(value[key]!==undefined)result[key]=value[key];return result;
+}
+function executionFields(plan){
+ const result={};
+ if(Object.hasOwn(plan,'destination')){
+  const value=plan.destination;
+  if(value===null)result.destination=null;
+  else {if(!object(value)||Object.keys(value).some(key=>!['id','name'].includes(key))||!boundedText(value.id,160)||value.name!==undefined&&!boundedText(value.name,160))throw Error('计划目的地只接受明确 id 和可选名称');result.destination={id:value.id,...(value.name!==undefined?{name:value.name}:{})};}
+ }
+ if(Object.hasOwn(plan,'steps')){if(!Array.isArray(plan.steps)||plan.steps.length>8)throw Error('计划步骤最多八条');result.steps=plan.steps.map(executionStep);}
+ if(Object.hasOwn(plan,'expectedAction'))result.expectedAction=plan.expectedAction===null?null:executionStep(plan.expectedAction);
+ return result;
+}
 export const planIdentity=(plan,context={})=>{
   const at=timestamp(plan.businessAt),anchor=at||timestamp(plan.nextAt)||context.now||Date.now();
   const day=dayKey(anchor),start=timestamp(plan.windowStart)||Date.parse(day+'T00:00:00+08:00'),end=timestamp(plan.windowEnd)||start+86400000;
@@ -50,7 +89,7 @@ export function preparePlanChanges(l,input,{round={},now=Date.now(),fishId=''}={
     }else if(!q&&!round.events?.includes(event.id))throw Error('未知事件或计划 ID：'+event.id);
   }
   for(const raw of changes){
-    const op=String(raw.op||''),p=raw.plan||raw.patch||{},old=raw.id?draft.plans.find(x=>x.id===raw.id):null;
+    const op=String(raw.op||''),supplied=raw.plan||raw.patch||{},p={...supplied,...executionFields(supplied)},old=raw.id?draft.plans.find(x=>x.id===raw.id):null;
     if(op!=='create'&&!old)throw Error('未知计划 ID：'+raw.id);
     if(old&&raw.expectedRevision!==old.revision)throw Error('计划版本冲突：'+old.id);
     if(!['create','update',...Object.keys(terminalOps)].includes(op))throw Error('计划增量操作无效');
@@ -75,6 +114,10 @@ export function preparePlanChanges(l,input,{round={},now=Date.now(),fishId=''}={
       if(same){
         if(planTerminal(same.status)||same.status==='needs_review'){result.push({op:'existing',id:same.id,expectedRevision:same.revision,legacy:raw.legacy});continue;}
         const patch=refinementPatch(same,candidate,{sourceEventIds,evidenceIds,proof:proof||{identity:semanticPlan(same,draft,context)}});
+        for(const key of executionKeys)if(Object.hasOwn(p,key)){
+          if(same[key]!==undefined&&JSON.stringify(executionCanonical(executionFields({[key]:same[key]})[key]))!==JSON.stringify(executionCanonical(p[key])))throw Error('计划执行目的已登记，请用已有 ID 明确更新：'+same.id);
+          if(same[key]===undefined)patch[key]=structuredClone(p[key]);
+        }
         const changed=Object.keys(patch).some(k=>JSON.stringify(same[k])!==JSON.stringify(patch[k]));
         const operation=changed?{op:'update',id:same.id,expectedRevision:same.revision,patch,evidenceIds,legacy:raw.legacy,submittedPlan:p,semanticReason:proof?.reason||'existing-program-identity'}:{op:'existing',id:same.id,expectedRevision:same.revision,legacy:raw.legacy};
         applyPlanChanges(draft,[operation],{now,roundId:round.id,recordHistory:false});result.push(operation);continue;
@@ -136,6 +179,7 @@ function applyPrepared(l,changes,{now=Date.now(),roundId=null,recordHistory=true
     if(change.op==='create'){
       if(l.plans.some(p=>p.id===change.id||p.logicalKey===change.plan.logicalKey&&planOpen(p.status)))throw Error('计划身份在提交后发生变化');
       const created=structuredClone(change.plan);
+      Object.assign(created,executionFields(created));
       normalizePlanTriggers({plans:[created],queue:l.queue,journal:l.journal},{now,bumpRevision:false});
       l.plans.push(created);
       if(recordHistory)(l.planHistory??=[]).push({at:now,roundId,op:'create',id:change.id,toRevision:change.plan.revision,evidenceIds:change.evidenceIds});
@@ -143,7 +187,7 @@ function applyPrepared(l,changes,{now=Date.now(),roundId=null,recordHistory=true
     }
     const p=l.plans.find(p=>p.id===change.id);
     if(!p||p.revision!==change.expectedRevision)throw Error('计划版本冲突：'+change.id);
-    const before=structuredClone(p),patch=change.patch||{};
+    const before=structuredClone(p),supplied=change.patch||{},patch={...supplied,...executionFields(supplied)};
     if(change.targetId){const target=l.plans.find(x=>x.id===change.targetId);if(!target||target.revision!==change.targetExpectedRevision)throw Error('目标计划版本冲突');}
     for(const key of fields)if(key in patch)p[key]=structuredClone(patch[key]);
     if(change.evidenceIds?.length&&patch.progress!==undefined)p.progress=norm(patch.progress);

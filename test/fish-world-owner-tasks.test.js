@@ -156,6 +156,7 @@ test('the installed module owner prompt hook and actual tool surface persist a p
  const installed=await module.setup(api),content=[{type:'text',text:'original current owner input'}],info={chat:{kind:'private',userId:'fixture-owner'},senderId:'fixture-owner',sessionId:f.owner.session.id,queryText:'你出门打个工去',turnToken:1};
  assert.equal(hooks.prompt(content,{...info,chat:{kind:'group',userId:'fixture-owner'}}),content);assert.equal(installed.status().life.ownerTasks,undefined);
  assert.equal(hooks.prompt(content,info),content);const task=installed.status().life.ownerTasks[0];assert.equal(task.instruction,info.queryText);assert.ok(hooks.context(info).includes(task.id));
+ f.owner.session.deriveMessages=()=>[{id:'synthetic-current-owner',role:'user',source:{kind:'aurabot',speaker:{role:'owner',chat:'private'}},content:[{type:'text',text:info.queryText}]}];
  const exec={agent:f.owner,callId:'real-private-go',name:W+'go',arguments:{place:'canteen'}};for(const guard of guards)assert.equal(guard(exec),undefined);for(const observe of events['tools/result'])observe(exec,{content:[{type:'text',text:'15:10 到合成食堂。'}]});
  const saved=JSON.parse(fs.readFileSync(path.join(folder,'runtime.json')));assert.equal(saved.life.ownerTasks[0].phase,'travelling');assert.equal(saved.life.journal.at(-1).ownerTaskId,task.id);assert.equal(saved.life.ownerTasks[0].finalAction.arguments.id,'work');
  const privateTools=builders[0]({...info,level:'full'});assert.ok(privateTools.some(t=>t.name==='fish_life_task'));assert.ok(privateTools.some(t=>t.name==='fish_world_state'));

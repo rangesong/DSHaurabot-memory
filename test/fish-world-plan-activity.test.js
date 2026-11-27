@@ -34,6 +34,7 @@ test('the real engine rejects a conflicting background route before journaling o
   assert.match(engine.guard(exec,true,false),/真实到达/);
   assert.equal(engine.l.journal.length,0);assert.deepEqual(engine.l.days,{});assert.equal(engine.l.round.calls,0);
   engine.l.round=null;
+  engine.ownerTurn('你出门打工去',{sessionId:'private',turnToken:1});
   assert.equal(engine.guard({...exec,agent:{session:{id:'private'}},callId:'owner-route'},false,true),undefined);
   assert.equal(engine.l.journal.at(-1).id,'owner-route');
 });
