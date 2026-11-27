@@ -7,6 +7,12 @@ const key=v=>String(v||'').replace(/^session-/,'');
 const sha=v=>createHash('sha256').update(v).digest('hex');
 export function stableAgentIdle(a){const box=a?.inbox;return a?.status==='idle'&&typeof box?.hasPending==='boolean'&&!box.hasPending&&Array.isArray(box.nextTurn)&&box.nextTurn.length===0&&Array.isArray(box.nextStep)&&box.nextStep.length===0;}
 export function ownSession(l,id){if(!id)return false;return key(l.sessionId)===key(id)||(l.contextWindow?.windows||[]).some(w=>key(w.sessionId)===key(id));}
+/** Detach global hooks before cancellation can reject or wait forever. */
+export function disposeHostRuntime(offs,engine,bridge){
+ for(const off of offs.splice(0).reverse())try{const pending=off?.();pending?.catch?.(()=>{});}catch{}
+ // LifeEngine.dispose writes closed/stopping synchronously, before its first cancellation await.
+ try{return engine?.dispose();}finally{bridge.dispose();}
+}
 /** Canonical SDK lookup and a narrowly proved stop, never evidence that an action succeeded. */
 export function createHostAgentLifecycle({findAgent,listAgents,resolveAgent,ownsSession}){
  const canonical=id=>typeof id==='string'?key(id):'';
