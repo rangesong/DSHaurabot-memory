@@ -48,6 +48,25 @@ function reconcileSharingPolicy(l,settingsSharing,now){
     if(reason)suppressUnsubmitted(o,reason,now);
   }
 }
+function recoveryOnlyCheckedIdlePreparation(l,r,failedId=l.failureBackoff?.lastRoundId){
+  if(!r.readOnly&&r.kind!=='recovery')return false;
+  const failed=l.journal.find(j=>j.type==='round'&&j.id===failedId&&j.status==='uncertain'&&j.kind==='idle');
+  if(!failed)return false;
+  const rows=l.journal.filter(j=>j.round===failed.id&&j.tool?.startsWith(WORLD));
+  if(!rows.length||rows.some(j=>j.status!=='confirmed'||j.isError||mutating(j.tool,(()=>{try{return JSON.parse(j.args);}catch{return {};}})())))return false;
+  return Object.values(failed.actionSequences||{}).every(sequence=>(sequence.calls||[]).every(call=>!mutating(call.tool)||call.status==='not-submitted'&&sequence.outcome?.notSubmitted===true&&call.guardRejection?.source==='local-engine.guard-rejection'));
+}
+function restoreIdlePreparationDeadline(l,cfg,now){
+  if(l.round||l.externalPending||l.recovery||l.backoffUntil>now)return;
+  const rounds=l.journal.filter(j=>j.type==='round'),recovered=rounds.at(-1),failed=rounds.at(-2),snapshot=l.contextWindow?.packet?.snapshot;
+  if(recovered?.kind!=='recovery'||recovered.status!=='completed'||!failed||!snapshot||snapshot.currentRound?.id!==recovered.id||snapshot.revision!==l.revision||!l.owner||!l.persona||snapshot.identity?.owner!==l.owner||snapshot.identity?.persona!==l.persona)return;
+  const started=l.scheduler?.starts?.find(row=>row.roundId===recovered.id)?.at,due=snapshot.nextIdle;
+  const copiedTask=[...(l.ownerTasks||[]),...l.plans].find(task=>task.owner===l.owner&&task.persona===l.persona&&['pending','active','waiting_event'].includes(task.status)&&task.nextAt===l.nextIdle&&task.nextAt>now);
+  if(!Number.isFinite(started)||!Number.isFinite(failed.at)||failed.at>started||!Number.isFinite(due)||due<=0||due>started||now<recovered.at||now-recovered.at>cfg.idleMs||l.nextIdle!==recovered.at+cfg.idleMs&&!copiedTask||l.nextIdle<=now)return;
+  if(!recoveryOnlyCheckedIdlePreparation(l,{readOnly:true},failed.id))return;
+  if(l.journal.some(j=>j.tool&&j.at>=failed.at&&j.at<=recovered.at&&mutating(j.tool,(()=>{try{return JSON.parse(j.args);}catch{return {};}})())))return;
+  const previous=l.nextIdle;l.nextIdle=due;l.idlePreparationScheduleRepair={version:1,at:now,recoveryRoundId:recovered.id,failedRoundId:failed.id,previousNextIdle:previous,restoredNextIdle:due,...copiedTask?{copiedTaskId:copiedTask.id}:{},noWorldMutation:true};
+}
 export class LifeEngine {
   constructor({bridge,host,settings=()=>({}),authorized=()=>true,identity=()=>({}),clock=Date.now}){
     Object.assign(this,{bridge,host,settings,authorized,identity,clock});this.closed=false;this.lock=null;this.agent=null;this.deliveryBusy=false;this.alertVisits=new Map();
@@ -59,6 +78,7 @@ export class LifeEngine {
       if(l.round){const reservation=l.scheduler?.reservations?.find(r=>r.roundId===l.round.id);if(reservation)reservation.status='uncertain';l.round.status='uncertain';l.round.stopReason='重启后先确认旧会话停止，再只读核对现场';l.recovery=true;}
       for(const q of l.queue)if(q.status==='running')q.status='uncertain';
       if(l.queue.some(q=>q.status==='uncertain'))l.recovery=true;
+      restoreIdlePreparationDeadline(l,{...defaults,...this.settings(),...l.controls},this.clock());
       const recoveryIds=new Set(l.journal.filter(j=>j.type==='round'&&j.kind==='recovery').map(j=>j.id));
       for(const o of l.outbox){if(recoveryIds.has(o.id))o.localOnly=true;if(o.state==='sending')o.state='uncertain';suppressDiagnosticDelivery(o,this.clock());}
       reconcileSharingPolicy(l,!!({...defaults,...this.settings()}.sharing),this.clock());
@@ -298,9 +318,9 @@ export class LifeEngine {
       if(r.calls>=this.cfg.maxCalls||now-r.startedAt>=this.cfg.turnMs)return '达到本轮调用/时间上限';
       if(mutating(name,exec.arguments)){
         if(r.readOnly||!r.observation)return '必须先真实观察；恢复回合禁止变更';
-        if(!r.identityConfirmed)return '变更前需要本轮 world_profile({}) 确认 MCP 和观看接口属于同一只鱼';
+        if(!r.identityConfirmed)return '优先用 fish_life_action 自动补齐本轮 world_profile({})，确认 MCP 和观看接口属于同一只鱼';
         if(this.l.queue.some(q=>q.priority<r.priority&&q.status==='pending'&&q.t>r.startedAt))return '出现更高优先级待办，停止本轮追加行动';
-        if(r.intent?.key!==fingerprint(name,exec.arguments))return '请先用 fish_life_intent 声明本次完整行动和预算';
+        if(r.intent?.key!==fingerprint(name,exec.arguments))return '请优先用 fish_life_action 核对并执行；当前通道未提供它时，才用 fish_life_intent 声明本次完整行动和预算';
       }
     }else if(mutating(name,exec.arguments)&&r){
       this.change(l=>{l.revision++;l.round.status='stopping';l.round.stopReason='主人 QQ 世界行动优先';l.recovery=true;});
@@ -383,7 +403,9 @@ export class LifeEngine {
           const success=r.receipts.filter(x=>!x.isError&&mutating(x.tool));
           if(success.length&&(p.trigger==='arrive'||p.trigger==='done'))(p.satisfiedStages??=[]).push({kind:p.trigger,at:now,expectedAt:p.nextAt||0,roundId:r.id,receiptIds:success.map(x=>x.id)});
         }
-        l.nextIdle=Math.max(now+this.cfg.idleMs,timestamp(report.nextAt)||now+this.cfg.idleMs);
+        // A proved read-only preparation failure has not completed self-care.
+        // Preserve normal timing when any mutation or unknown dispatch may exist.
+        if(!r.definitionOnly&&!r.planningOnly&&!r.availabilityOnly&&!recoveryOnlyCheckedIdlePreparation(l,r))l.nextIdle=r.kind==='idle'&&!r.readOnly?Math.max(now+this.cfg.idleMs,timestamp(report.nextAt)||now+this.cfg.idleMs):now+this.cfg.idleMs;
         if(r.readOnly){l.recovery=false;l.verification=false;}
         const localOnly=r.readOnly||r.kind==='recovery'||r.definitionOnly&&!r.journeyObservationCompleted||r.planningOnly||r.availabilityOnly,sharing=l.sharingPolicy.sharing;
         if(report.share&&(localOnly||!sharing||['urgent','important'].includes(report.importance))){

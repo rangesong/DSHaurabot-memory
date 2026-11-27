@@ -69,14 +69,50 @@ function identityProof(engine,round){
  }
  return null;
 }
+function latestObservation(engine){
+ const round=engine.l.round,receipt=round.receipts.findLast(r=>r.tool===PREFIX+'now'&&!r.isError);
+ return receipt&&proof(engine,round,PREFIX+'now',receipt.id)?receipt:null;
+}
+function roomSuggestion(text,target){
+ if(typeof target!=='string')return null;
+ const lines=text.split(/\r?\n/),where=lines.findIndex(line=>/^你在[：:]家(?: · |$)/u.test(line));
+ // Location and room options must be protocol headings, never a quotation or a past profile.
+ if(where<0||where>3)return null;
+ const start=lines.findIndex((line,i)=>i>where&&/^别的房间（world_do .+world_go .+）：$/u.test(line));
+ if(start<0)return null;
+ const choices=[];
+ for(let i=start+1;i<lines.length;i++){
+  const line=lines[i];if(!line.trim())continue;
+  if(!/^· /u.test(line))break;
+  const match=/^· ([^：\r\n]{1,80})：(.+)$/u.exec(line);if(!match)continue;
+  const prefixes=[...match[2].matchAll(/(?<![A-Za-z0-9_-])([A-Za-z][A-Za-z0-9_-]*-)(?![A-Za-z0-9_-])/gu)].map(m=>m[1]);
+  if(prefixes.some(prefix=>target.startsWith(prefix)&&target.length>prefix.length))choices.push({room:match[1],line});
+ }
+ if(choices.length!==1)return null;
+ const {room,line}=choices[0];
+ return {nextAction:{tool:'fish_life_action',arguments:{tool:PREFIX+'go',arguments:JSON.stringify({place:room}),category:'daily',cost:0,evidence:line}},then:{tool:PREFIX+'now',arguments:{}}};
+}
+function evidenceFailure(engine,args,code){
+ const latest=latestObservation(engine),suggestion=latest&&roomSuggestion(latest.text,args.id);
+ const prefix=typeof args.id==='string'&&/^([A-Za-z][A-Za-z0-9_]*-)/u.exec(args.id)?.[1];
+ const optionToken=prefix&&new RegExp('(^|[^A-Za-z0-9_-])'+prefix+'[A-Za-z0-9][A-Za-z0-9_-]*(?![A-Za-z0-9_-])','u');
+ const optionLines=latest&&optionToken?[...new Set(latest.text.split(/\r?\n/).filter(line=>line.length<=2000&&!/^\s*>/u.test(line)&&!/^—— /u.test(line)&&optionToken.test(line)))].slice(0,6):[];
+ const error=Error(suggestion?'当前现场只列出了动作前缀，尚无完整选项；可按 nextAction 去该房间，再按 then 读取真实选项，随后使用真实完整编号。':'当前最新 world_now 没有唯一的完整可执行选项原行；先取得新的现场选项，再按真实完整编号登记动作。');
+ Object.assign(error,{code:suggestion?'need-options':code,retryableAfterObservation:true,evidenceSnapshot:latest?hash(latest.text):null,optionLines,...suggestion});
+ return error;
+}
 function selectEvidence(engine,input,args){
  const receipts=engine.l.round.receipts.filter(r=>!r.isError),evidence=typeof input.evidence==='string'?input.evidence:'';
- if(evidence&&receipts.some(r=>r.text.includes(evidence)))return evidence;
+ if(input.tool!==PREFIX+'do'&&evidence&&receipts.some(r=>r.text.includes(evidence)))return evidence;
  const target=input.tool===PREFIX+'do'?args.id:input.tool===PREFIX+'say'?args.fish:null;
- if(typeof target!=='string'||!target.trim())throw Error('需要当前真实回执的精确 evidence；此动作不能自动定位依据');
+ if(typeof target!=='string'||!target.trim()){
+  if(input.tool===PREFIX+'do')throw evidenceFailure(engine,args,'need-exact-evidence');
+  throw Error('需要当前真实回执的精确 evidence；此动作不能自动定位依据');
+ }
  const escaped=target.replace(/[.*+?^$\{\}()|[\]\\]/g,'\\$&');
  const exact=new RegExp('(^|[^\\p{L}\\p{N}_#-])'+escaped+'(?![\\p{L}\\p{N}_#-])','u'),lines=new Set();
- for(const r of receipts){
+ const latest=input.tool===PREFIX+'do'?latestObservation(engine):null;
+ for(const r of input.tool===PREFIX+'do'?(latest?[latest]:[]):receipts){
   // Reply evidence must be a live observation or a history query for that exact peer.
   if(input.tool===PREFIX+'say'){
    if(![PREFIX+'now',PREFIX+'history'].includes(r.tool))continue;
@@ -85,9 +121,12 @@ function selectEvidence(engine,input,args){
     if(query?.fish!==target)continue;
    }
   }
-  for(const line of r.text.split(/\r?\n/))if(line.length<=2000&&exact.test(line))lines.add(line);
+  for(const line of r.text.split(/\r?\n/))if(line.length<=2000&&!/^\s*>/u.test(line)&&!/^—— /u.test(line)&&exact.test(line))lines.add(line);
  }
- if(lines.size!==1)throw Error('未找到唯一、明确对应本动作的真实原行；请提供当前回执中的精确 evidence');
+ if(input.tool===PREFIX+'do'){
+  if(lines.has(evidence))return evidence;
+  if(lines.size!==1)throw evidenceFailure(engine,args,lines.size?'need-exact-evidence':'need-options');
+ }else if(lines.size!==1)throw Error('未找到唯一、明确对应本动作的真实原行；请提供当前回执中的精确 evidence');
  return [...lines][0];
 }
 const clone=value=>structuredClone(value);
@@ -110,15 +149,18 @@ export async function executeSequencedAction({engine,tools,exec},input){
  const {request_id:ignored,...args}=supplied;
  // The same business action is identical even if a model invents a new request_id, quote or budget label.
  const actionKey='action-'+hash([input.tool,args]),key=roundId+':'+actionKey;
- const existing=engine.l.round.actionSequences?.[actionKey];
- if(existing?.outcome)return clone({...existing.outcome,reused:true});
- current(engine,exec,roundId,{reuse:true});
  let active=running.get(engine);if(!active)running.set(engine,active=new Map());
  if(active.has(key))return clone(await active.get(key));
- if(existing)throw Error('同一动作已有未确认的提交记录，禁止重做');
+ const existing=engine.l.round.actionSequences?.[actionKey],latest=latestObservation(engine);
+ const revalidate=existing?.outcome?.retryableAfterObservation===true&&existing.outcome.notSubmitted===true&&
+  existing.outcome.status==='blocked'&&['need-options','need-exact-evidence'].includes(existing.outcome.code)&&
+  !existing.calls.some(call=>call.tool===input.tool)&&latest&&hash(latest.text)!==existing.outcome.evidenceSnapshot;
+ if(existing?.outcome&&!revalidate)return clone({...existing.outcome,reused:true});
+ current(engine,exec,roundId,{reuse:true});
+ if(existing&&!revalidate)throw Error('同一动作已有未确认的提交记录，禁止重做');
  current(engine,exec,roundId);
  const job=(async()=>{
-  engine.change(l=>{l.round.actionSequences??={};l.round.actionSequences[actionKey]={id:actionKey,source:'program-action-sequence',roundId,parent:origin,tool:input.tool,argumentsSha256:hash(args),category:input.category,cost:input.cost,at:engine.clock(),status:'preparing',calls:[]};});
+  engine.change(l=>{l.round.actionSequences??={};if(revalidate){const row=l.round.actionSequences[actionKey];row.preflightHistory??=[];row.preflightHistory.push({at:row.finishedAt,parent:row.parent,outcome:row.outcome});row.parent=origin;row.status='preparing';delete row.outcome;}else l.round.actionSequences[actionKey]={id:actionKey,source:'program-action-sequence',roundId,parent:origin,tool:input.tool,argumentsSha256:hash(args),category:input.category,cost:input.cost,at:engine.clock(),status:'preparing',calls:[]};});
   const row=()=>engine.l.round?.id===roundId?engine.l.round.actionSequences[actionKey]:null;
   const update=fn=>engine.change(l=>{if(l.round?.id!==roundId)throw Error('后台回合已结束');fn(l.round.actionSequences[actionKey],l.round,l);});
   let lastCall=null,mutationSubmitted=false;
@@ -146,10 +188,13 @@ export async function executeSequencedAction({engine,tools,exec},input){
    if(r.calls+required>engine.cfg.maxCalls)throw Error('剩余世界调用次数不足以完成前置核对和动作');
    if(!r.observation||!proof(engine,r,PREFIX+'now'))await dispatch(PREFIX+'now',{},'observation');
    if(!engine.l.round.observation)throw Error('world_now 没有取得当前真实观察');
+   // Only do needs current executable options before another identity lookup.
+   let evidence;if(input.tool===PREFIX+'do')evidence=selectEvidence(engine,input,args);
    if(!identityProof(engine,engine.l.round))await dispatch(PREFIX+'profile',{},'identity');
    if(!identityProof(engine,engine.l.round))throw Error('world_profile 未确认当前本鱼身份');
    current(engine,exec,roundId);
-   const evidence=selectEvidence(engine,input,args),requestId=['go','do','say'].some(n=>input.tool===PREFIX+n)?'fa:'+hash([roundId,actionKey]).slice(0,32):null;
+   evidence??=selectEvidence(engine,input,args);
+   const requestId=['go','do','say'].some(n=>input.tool===PREFIX+n)?'fa:'+hash([roundId,actionKey]).slice(0,32):null;
    const planned={...args,...requestId?{request_id:requestId}:{}};
    const intent=engine.intent({...input,arguments:JSON.stringify(planned),evidence}),approved=clone(intent?.arguments);
    if(!intent?.ok||!approved||typeof approved!=='object'||Array.isArray(approved))throw Error('行动意图尚未核对');
@@ -164,7 +209,8 @@ export async function executeSequencedAction({engine,tools,exec},input){
    const record=row(),journal=lastCall&&engine.l.journal.find(j=>j.id===lastCall);
    const uncertain=mutationSubmitted&&!error[NOT_SUBMITTED]&&journal?.status!=='failed'||record?.calls.some(c=>c.status==='dispatching'||c.status==='uncertain');
    const outcome={ok:false,status:uncertain?'uncertain':'blocked',actionId:actionKey,tool:input.tool,receiptId:lastCall,
-    message:String(error.message||error).slice(0,1000),notSubmitted:!!error[NOT_SUBMITTED],automaticReplay:false};
+    message:String(error.message||error).slice(0,1000),notSubmitted:!mutationSubmitted||!!error[NOT_SUBMITTED],automaticReplay:false,
+    ...error.retryableAfterObservation?{code:error.code,retryableAfterObservation:true,evidenceSnapshot:error.evidenceSnapshot,optionLines:error.optionLines,...error.nextAction?{nextAction:error.nextAction,then:error.then}:{}}:{}};
    if(record)update((entry,round,l)=>{entry.status=outcome.status;entry.phase='stopped';entry.finishedAt=engine.clock();entry.outcome=outcome;
     if(uncertain){round.status='stopping';round.stopReason='顺序动作结果未确认；停止追加并只读恢复';l.recovery=true;}});
    return clone(outcome);

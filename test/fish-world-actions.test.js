@@ -121,7 +121,7 @@ test('ambiguous IDs, ID prefixes and unsupported action types cannot borrow gene
   [{nowText:'· fixture-action-long 可以做'},input],
   [{},{tool:PREFIX+'update',arguments:'{"outfit":"fixture-shirt"}',category:'daily',cost:0}],
  ]){
-  const f=fixture(options),result=await run(f,{...args,evidence:''});assert.equal(result.ok,false);assert.equal(f.effects.length,2);assert.ok(!f.effects.includes(args.tool));
+  const f=fixture(options),result=await run(f,{...args,evidence:''});assert.equal(result.ok,false);assert.deepEqual(f.effects,args.tool===PREFIX+'do'?[PREFIX+'now']:[PREFIX+'now',PREFIX+'profile']);assert.equal(result.notSubmitted,true);assert.ok(!f.effects.includes(args.tool));
  }
 });
 test('valid explicit evidence wins over fallback ambiguity without guessed prices',async()=>{
