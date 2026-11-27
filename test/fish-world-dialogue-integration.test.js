@@ -184,7 +184,7 @@ test('captured module dialogue tools reject stale owner, sender and session scop
 test('module exposes dialogue only to its exact owned background route without replacing existing background tools',async t=>{
   const sdk=await installed(t);if(!sdk)return;const f=await moduleFixture(t,sdk,{background:true});
   const tools=f.build({chat:f.systemChat}),names=tools.map(tool=>tool.name);
-  assert.equal(names.filter(name=>name===TOOL).length,1);assert.deepEqual(names.filter(name=>name!==TOOL),['fish_life_task','fish_life_history','fish_life_intent','fish_life_finish']);
+  assert.equal(names.filter(name=>name===TOOL).length,1);assert.deepEqual(names.filter(name=>name!==TOOL),['fish_life_history','fish_life_intent','fish_life_finish']);assert.equal(names.includes('fish_life_task'),false);
   assert.equal(f.build({chat:{kind:'system',chatId:'system:ext-fish-world:'+f.base}}).length,0);
   const stale=tools.find(tool=>tool.name===TOOL);f.config.persona.current='different-persona';assert.equal((await stale.execute({fish:'#321'},f.exec)).ok,false);assert.equal(f.bodies.length,0);noSideEffects(f);
 });
