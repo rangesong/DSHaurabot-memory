@@ -1,6 +1,7 @@
 import {createHash,randomUUID} from 'node:crypto';
 import {worldToolName} from './owner-tasks.mjs';
 import {sameSession} from './session-identity.mjs';
+import {parseWorldNowActivity} from './plan-activity.mjs';
 const PREFIX='mcp__fish-world__world_';
 const origins=new WeakMap(),running=new WeakMap(),guardRejections=new WeakMap(),NOT_SUBMITTED=Symbol('local-guard-not-submitted');
 const canonical=value=>Array.isArray(value)?value.map(canonical):value&&typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map(k=>[k,canonical(value[k])])):value;
@@ -129,6 +130,66 @@ function roomSuggestion(text,target){
  const {room,line}=choices[0];
  return {nextAction:{tool:'fish_life_action',arguments:{tool:PREFIX+'go',arguments:JSON.stringify({place:room}),category:'daily',cost:0,evidence:line}},then:{tool:PREFIX+'now',arguments:{}}};
 }
+function navigationProof(engine,receipt){
+ const r=engine.l.round,now=engine.clock(),j=proof(engine,r,receipt.tool,receipt.id)?.journal,query=j&&parse(j.args);
+ if(receipt.isError||!j||j.isError||!sameSession(j.sessionId,r.sessionId)||j.result!==receipt.text||!query||typeof query!=='object'||Array.isArray(query)||j.owner!==undefined&&j.owner!==engine.l.owner||j.persona!==undefined&&j.persona!==engine.l.persona||j.fishId!==undefined&&j.fishId!==engine.bridge.data.fishId||!Number.isFinite(r.startedAt)||!Number.isFinite(j.at)||j.at<r.startedAt||!Number.isFinite(j.finishedAt)||j.finishedAt<j.at||j.finishedAt>now||now-j.finishedAt>180000)return null;
+ return query;
+}
+function explicitNavigationEvidence(engine,args,evidence){
+ if(typeof evidence!=='string'||!evidence||evidence.length>2000)return null;
+ const r=engine.l.round,latest=latestObservation(engine);
+ for(let i=r.receipts.length-1;i>=0;i--){
+  const receipt=r.receipts[i];if(![PREFIX+'now',PREFIX+'go'].includes(receipt.tool)||!receipt.text.includes(evidence))continue;
+  const query=navigationProof(engine,receipt);if(!query)continue;
+  const lines=receipt.text.split(/\r?\n/);
+  if(receipt.tool===PREFIX+'go'&&query.place===args.place&&!query.by&&/^去[^\r\n]+有 [1-9]\d* 种走法，world_go 时 by 填其中一个：$/u.test(lines[0])){
+   const routes=lines.slice(1).filter(line=>/^· /u.test(line));
+   const selected=routes.filter(line=>/^· .+? ([a-z][a-z0-9_-]{0,79}) —— /u.exec(line)?.[1]===args.by);
+   if(selected.length===1&&evidence.split(/\r?\n/).includes(selected[0]))return {line:evidence,receiptId:receipt.id};
+  }
+  // Preserve an explicitly declared current world_go menu; arbitrary profile/history text is not authority.
+  if(receipt.tool===PREFIX+'now'&&receipt.id===latest?.id&&lines.includes(evidence)){
+   const target=/^· [^\r\n]+（world_go 填([^（）\r\n]+)）$/u.exec(evidence)?.[1];
+   if(target===args.place)return {line:evidence,receiptId:receipt.id};
+  }
+ }
+ return null;
+}
+function navigationEvidence(engine,args,evidence){
+ const explicit=explicitNavigationEvidence(engine,args,evidence);if(explicit)return explicit;
+ const r=engine.l.round,target=args.place;if(typeof target!=='string'||!target.trim())return null;
+ const placeId=entry=>/^.+?\s+([a-z][a-z0-9_-]{0,79})（/u.exec(entry)?.[1];
+ const entries=body=>{const out=[];let depth=0,start=0;for(let i=0;i<body.length;i++){const c=body[i];if(c==='（'||c==='(')depth++;else if(c==='）'||c===')'){if(--depth<0)return [];}else if(!depth&&body.startsWith(' · ',i)){out.push(body.slice(start,i));start=i+3;i+=2;}}if(depth)return [];out.push(body.slice(start));return out;};
+ const latestNow=latestObservation(engine);
+ for(let i=r.receipts.length-1;i>=0;i--){
+  const receipt=r.receipts[i];if(receipt.isError||![PREFIX+'now',PREFIX+'find'].includes(receipt.tool))continue;
+  if(!navigationProof(engine,receipt))continue;
+  if(receipt.tool===PREFIX+'now'&&receipt.id===latestNow?.id){const rooms=homeRoomOptions(receipt.text).filter(room=>room.room===target);if(rooms.length)return rooms.length===1?{line:rooms[0].line,receiptId:receipt.id}:null;}
+  if(!/^[a-z][a-z0-9_-]{0,79}$/u.test(target))continue;
+  const lines=receipt.text.split(/\r?\n/),matches=[];
+  if(receipt.tool===PREFIX+'find'){
+   if(!lines[0]?.startsWith('· '))continue;
+   for(const line of lines){if(!line.startsWith('· '))break;if(line.length<=2000&&placeId(line.slice(2))===target)matches.push(line);}
+  }else if(parseWorldNowActivity(receipt.text)){
+   for(const line of lines){const map=/^这一带（[^（）\r\n]{1,80}）：(.+)$/u.exec(line);if(map&&line.length<=2000&&entries(map[1]).some(entry=>placeId(entry)===target))matches.push(line);}
+  }
+  const unique=[...new Set(matches)];if(unique.length)return unique.length===1?{line:unique[0],receiptId:receipt.id}:null;
+ }
+ return null;
+}
+function presentPeerEvidence(engine,args){
+ const target=typeof args.fish==='string'&&/^(?:[^#\r\n]{0,80}#)?([1-9]\d{0,17})$/u.exec(args.fish)?.[1];if(!target)return null;
+ const r=engine.l.round,receipt=latestObservation(engine);
+ if(!receipt||!navigationProof(engine,receipt)||r.observation!==receipt.text||r.observationId&&r.observationId!==receipt.id||!parseWorldNowActivity(receipt.text))return null;
+ const lines=receipt.text.split(/\r?\n/),matches=[];
+ for(let i=0;i<lines.length;i++)if(/^这里有 [1-9]\d* 只鱼(?:（第 [1-9]\d*\/[1-9]\d* 页）)?：$/u.test(lines[i])){
+  for(let j=i+1;j<lines.length&&/^· /u.test(lines[j]);j++){
+   const peer=/^· (?:[^#\r\n]{1,80})?#([1-9]\d{0,17}) —— [^\r\n]*$/u.exec(lines[j]);
+   if(peer?.[1]===target&&lines[j].length<=2000)matches.push(lines[j]);
+  }
+ }
+ const unique=[...new Set(matches)];return unique.length===1?unique[0]:null;
+}
 function evidenceFailure(engine,args,code){
  const latest=latestObservation(engine),suggestion=latest&&roomSuggestion(latest.text,args.id);
  const prefix=typeof args.id==='string'&&/^([A-Za-z][A-Za-z0-9_]*-)/u.exec(args.id)?.[1];
@@ -140,11 +201,15 @@ function evidenceFailure(engine,args,code){
 }
 function selectEvidence(engine,input,args){
  const receipts=engine.l.round.receipts.filter(r=>!r.isError),evidence=typeof input.evidence==='string'?input.evidence:'';
- if(input.tool!==PREFIX+'do'&&evidence&&receipts.some(r=>r.text.includes(evidence)))return evidence;
- if(input.tool===PREFIX+'go'&&!evidence){
-  const latest=latestObservation(engine),rooms=latest?homeRoomOptions(latest.text).filter(room=>room.room===args.place):[];
-  if(rooms.length===1)return rooms[0].line;
+ if(input.tool===PREFIX+'go'){
+  const selected=navigationEvidence(engine,args,evidence);if(selected)return selected.line;
+  throw Object.assign(Error('当前真实地图或查找结果中没有唯一目的地原行；请先查当前目的地，程序会自动选择原回执，不需改写 evidence'),{code:'need-exact-evidence',retryableAfterObservation:true,evidenceSnapshot:latestObservation(engine)?hash(latestObservation(engine).text):null});
  }
+ if(input.tool===PREFIX+'say'){
+  const present=presentPeerEvidence(engine,args);if(present)return present;
+  if(evidence&&receipts.some(r=>r.tool===PREFIX+'history'&&r.text.includes(evidence)&&parse(engine.l.journal.find(j=>j.id===r.id&&j.status==='confirmed')?.args||'')?.fish===args.fish))return evidence;
+ }
+ if(input.tool!==PREFIX+'do'&&input.tool!==PREFIX+'say'&&evidence&&receipts.some(r=>r.text.includes(evidence)))return evidence;
  const target=input.tool===PREFIX+'do'?args.id:input.tool===PREFIX+'say'?args.fish:null;
  if(typeof target!=='string'||!target.trim()){
   if(input.tool===PREFIX+'do')throw evidenceFailure(engine,args,'need-exact-evidence');
@@ -157,7 +222,8 @@ function selectEvidence(engine,input,args){
  for(const r of input.tool===PREFIX+'do'?(latest?[latest]:[]):receipts){
   // Reply evidence must be a live observation or a history query for that exact peer.
   if(input.tool===PREFIX+'say'){
-   if(![PREFIX+'now',PREFIX+'history'].includes(r.tool))continue;
+   // Current presence was selected from its protocol block above; arbitrary notice text is not a peer.
+   if(r.tool!==PREFIX+'history')continue;
    if(r.tool===PREFIX+'history'){
     const j=engine.l.journal.find(j=>j.id===r.id&&j.status==='confirmed'),query=parse(j?.args||'');
     if(query?.fish!==target)continue;
@@ -195,13 +261,14 @@ export async function executeSequencedAction({engine,tools,exec},input){
  let active=running.get(engine);if(!active)running.set(engine,active=new Map());
  if(active.has(key))return clone(await active.get(key));
  const existing=engine.l.round.actionSequences?.[actionKey],latest=latestObservation(engine);
+ const automaticNavigation=existing?.outcome?.retryableAfterObservation===true&&input.tool===PREFIX+'go'&&navigationEvidence(engine,args);
  let correctedEvidence=false;
  if(existing?.outcome?.retryableAfterObservation===true&&typeof input.evidence==='string'&&input.evidence&&hash(input.evidence)!==existing.outcome.evidenceInputSha256){
   try{correctedEvidence=selectEvidence(engine,input,args)===input.evidence;}catch{}
  }
  const revalidate=existing?.outcome?.retryableAfterObservation===true&&existing.outcome.notSubmitted===true&&
   existing.outcome.status==='blocked'&&['need-options','need-exact-evidence'].includes(existing.outcome.code)&&
-  !existing.calls.some(call=>call.tool===input.tool)&&(correctedEvidence||latest&&hash(latest.text)!==existing.outcome.evidenceSnapshot);
+  !existing.calls.some(call=>call.tool===input.tool)&&(automaticNavigation||correctedEvidence||latest&&hash(latest.text)!==existing.outcome.evidenceSnapshot);
  if(existing?.outcome&&!revalidate)return clone({...existing.outcome,reused:true});
  current(engine,exec,roundId,{reuse:true});
  if(existing&&!revalidate)throw Error('同一动作已有未确认的提交记录，禁止重做');

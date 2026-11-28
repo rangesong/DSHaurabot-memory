@@ -12,6 +12,7 @@ import {planActivityGuard} from './plan-activity.mjs';
 import {normalizePlanTriggers} from './plan-triggers.mjs';
 import {sameSession,ownerTaskContext} from './session-identity.mjs';
 import {recoverSessionAliasFailures} from './journey-recovery.mjs';
+import {nativeOwnerPurposeSource,captureNativeOwnerPurpose,attachConfirmedOwnerPurpose} from './owner-purpose.mjs';
 
 export const WORLD='mcp__fish-world__';
 export const worldNames=['now','history','find','profile','go','do','say','friends','update','guide'].map(n=>WORLD+'world_'+n);
@@ -110,6 +111,11 @@ export class LifeEngine {
     if(!validSharingPolicy(p)||p.settingsSharing!==settingsSharing||p.sharing!==sharing||this.l.outbox.some(o=>isUnsubmittedShare(o)&&(!sharing||!shareTimeKnown(o,now)||now-o.at>=shareTtlMs)))this.change(l=>reconcileSharingPolicy(l,settingsSharing,now));
   }
   blocked(reason){if(this.l.blocked!==reason)this.change(l=>{l.blocked=reason;});}
+  nativeOwnerMessage(session,event,chatId){
+    if(this.closed||!this.authorized())return;
+    const source=nativeOwnerPurposeSource(session,event,{identity:this.identity(),chatId,now:this.clock()});if(!source)return;
+    this.change(l=>captureNativeOwnerPurpose(l,source));
+  }
   ownerTurn(text,info){
     const token=info.turnToken;let turnKey=typeof token==='string'||typeof token==='number'?token:undefined;
     if(token&&typeof token==='object'){if(!this.ownerPromptTokens.has(token))this.ownerPromptTokens.set(token,randomUUID());turnKey=this.ownerPromptTokens.get(token);}
@@ -338,7 +344,7 @@ export class LifeEngine {
     this.change(l=>{l.round.intent={key:fingerprint(input.tool,args),cost,category,evidence:clean(input.evidence)};});
     return {ok:true,arguments:args,message:'意图已核对；请使用以下完整参数（含防重复 request_id）调用 '+input.tool+'：'+JSON.stringify(args)};
   }
-  guard(exec,isBackground,isOwner){
+  guard(exec,isBackground,isOwner,ownerSource){
     const name=exec.name,world=name.startsWith(WORLD),r=this.l.round,now=this.clock();
     if(isBackground&&!world&&!localNames.has(name)&&name!=='run_code')return '世界后台仅允许世界、计划和汇报能力';
     if(!world)return;
@@ -364,7 +370,8 @@ export class LifeEngine {
     }
     if(this.lock||this.l.externalPending)return '另一个世界工具仍在执行，请等待回执';
     this.change(l=>{if(isBackground){l.round.calls++;budget(l,now).calls++;if(mutating(name,exec.arguments)){budget(l,now).spend+=l.round.intent.cost;l.round.intent=null;}}
-      l.journal.push({id:exec.callId,at:now,sessionId:exec.agent?.session?.id,round:isBackground?r.id:null,ownerTaskId:taskForExecution(l,exec)?.id||null,tool:name,args:clean(JSON.stringify(exec.arguments)),status:'executing'});l.lastToolAt=now;
+      const ownerOrigin=!isBackground&&isOwner&&name===WORLD+'world_go'&&ownerSource?.kind==='owner'&&ownerSource.worldAuthorized===true&&typeof ownerSource.sourceMessageId==='string'&&ownerSource.sourceMessageId&&['events','derived'].includes(ownerSource.evidence)?{kind:'owner',sourceMessageId:ownerSource.sourceMessageId,evidence:ownerSource.evidence}:null;
+      l.journal.push({id:exec.callId,at:now,sessionId:exec.agent?.session?.id,round:isBackground?r.id:null,ownerTaskId:taskForExecution(l,exec)?.id||null,tool:name,args:clean(JSON.stringify(exec.arguments)),status:'executing',...ownerOrigin?{ownerOrigin}:{}});l.lastToolAt=now;
       if(!isBackground)l.externalPending={callId:exec.callId,sessionId:exec.agent?.session?.id};});
     this.lock={callId:exec.callId,sessionId:exec.agent?.session?.id};
   }
@@ -374,7 +381,7 @@ export class LifeEngine {
     const text=clean(textOf(result)),isError=!!result.isError||result.value?.ok===false||/\[E_[A-Z_]+\]/.test(text);
     const uncertain=isError&&mutating(exec.name,exec.arguments)&&/timeout|timed out|超时|abort|ECONNRESET|断线|not connected/i.test(text);
     this.change(l=>{
-      const entry=l.journal.find(x=>x.id===exec.callId);if(entry){Object.assign(entry,{status:uncertain?'uncertain':isError?'failed':'confirmed',isError,result:text,finishedAt:this.clock()});noteOwnerTaskResult(l,this.bridge.data,entry,this.clock());}
+      let entry=l.journal.find(x=>x.id===exec.callId);if(entry){Object.assign(entry,{status:uncertain?'uncertain':isError?'failed':'confirmed',isError,result:text,finishedAt:this.clock()});attachConfirmedOwnerPurpose(l,entry,this.identity(),this.clock());entry=l.journal.find(x=>x.id===exec.callId);noteOwnerTaskResult(l,this.bridge.data,entry,this.clock());}
       const r=l.round;if(r&&sameSession(exec.agent?.session?.id,r.sessionId)){r.receipts.push({id:exec.callId,tool:exec.name,text,isError});if(exec.name===WORLD+'world_now'){r.observation=isError?'':text;if(isError)delete r.observationId;else r.observationId=exec.callId;r.intent=null;}
         if(exec.name===WORLD+'world_profile'&&!exec.arguments?.fish&&!isError)r.identityConfirmed=!!r.observation&&isExactFishIdentity(text,this.bridge.data.fishId);}
       if(r&&uncertain){r.status='stopping';r.stopReason='世界调用结果不确定，先停止并核对';l.recovery=true;}

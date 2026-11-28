@@ -112,7 +112,7 @@ test('fallback evidence is one exact action ID line from a current successful re
  const f=fixture(),captured=[],original=f.engine.intent.bind(f.engine);f.engine.intent=args=>{captured.push(args.evidence);return original(args);};
  const result=await run(f,{...input,evidence:'a rewritten untrusted quote'});assert.equal(result.ok,true);
  assert.equal(captured[0],'合成现场：允许 fixture-action；0 贝');assert.equal(f.trace.length,3);
- const say=fixture({nowText:'合成消息：peer#3（当面）：\n> 你好'}),reply=await run(say,{tool:PREFIX+'say',arguments:'{"fish":"peer#3","text":"你好"}',category:'social',cost:0});
+ const say=fixture({nowText:'11-28 周六 16:45 · 晴 4°C\n你在：合成海岸\n身体：精神不错\n这里有 1 只鱼（第 1/1 页）：\n· peer#3 —— 在散步'}),reply=await run(say,{tool:PREFIX+'say',arguments:'{"fish":"peer#3","text":"你好"}',category:'social',cost:0});
  assert.equal(reply.ok,true);assert.equal(say.trace.at(-1).args.fish,'peer#3');
 });
 test('ambiguous IDs, ID prefixes and unsupported action types cannot borrow generic evidence',async()=>{
