@@ -1,6 +1,17 @@
 const contextKinds=new Set(['runtime-context','time-context','system-context','memory-context','system-prompt']);
 const plain=value=>!!value&&typeof value==='object'&&!Array.isArray(value)&&[Object.prototype,null].includes(Object.getPrototypeOf(value));
 const unknown=(reason,evidence='unavailable')=>({kind:'unknown',worldAuthorized:false,reason,evidence});
+/** Verify the latest native owner message, never a matching quote inside its injected history. */
+export function verifyCurrentOwnerPurposeSource(events,{sessionId,owner,sourceMessageId,ownerText}={}){
+ if(!Array.isArray(events)||typeof sessionId!=='string'||!sessionId||typeof owner!=='string'||!owner||typeof sourceMessageId!=='string'||typeof ownerText!=='string')throw Error('缺少当前主人消息的正式来源');
+ const event=events.findLast(e=>e?.type==='user/message'&&!contextKinds.has(e.data?.source?.kind)),message=event?.data,source=message?.source;
+ if(message?.id!==sourceMessageId||message.role!=='user'||source?.kind!=='aurabot'||source.speaker?.role!=='owner'||source.speaker?.chat!=='private')throw Error('当前原始输入已变化，不能恢复旧命令');
+ const blocks=(message.content||[]).filter(c=>c?.type==='text'&&typeof c.text==='string'&&c.text.startsWith('【私聊】['));
+ if(blocks.length!==1)throw Error('当前主人正文不唯一，不能从历史资料猜测');
+ const escaped=owner.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),header=new RegExp('^【私聊】\\[(?:[01]\\d|2[0-3]):[0-5]\\d\\] [^\\r\\n]+?\\('+escaped+'\\)：').exec(blocks[0].text);
+ if(!header||blocks[0].text.slice(header[0].length)!==ownerText)throw Error('恢复正文与当前主人原话不一致');
+ return Object.freeze({kind:'owner',origin:'native-owner-event',sessionId,owner,sourceMessageId,ownerText});
+}
 function currentEvents(session){
  let read,length;
  if(typeof session.eventAt==='function'&&Number.isSafeInteger(session.seq)&&session.seq>=0){length=session.seq;read=index=>session.eventAt(index);}

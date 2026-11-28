@@ -14,18 +14,19 @@ function fixture(start=at){
 }
 const define=(f,t,steps,nextAt)=>defineOwnerTask(f.l,{id:t.id,expectedRevision:t.revision,steps,...nextAt===undefined?{}:{nextAt}},{sessionId:f.bg,background:true,taskId:t.id,now:f.now});
 const workStep=id=>({tool:'world_do',arguments:JSON.stringify({id}),nextStep:'执行当前真实班内事项'});
+const allowsAction=(f,task,name,args,background=true,session=f.bg)=>{const before=structuredClone(task);assert.equal(ownerTaskGuard(f.l,f.data,f.exec(name,args,session),background,f.now),undefined);assert.deepEqual(task,before,'task tracking does not deny an action or fabricate progress');};
 const nextPlan=(f,id='next-day',extra={})=>({id,owner:identity.owner,persona:identity.persona,goal:'次日实际活动',reason:'主人每日安排',nextStep:'到时执行',status:'pending',businessAt:Date.parse('2026-11-27T08:00:00+08:00'),nextAt:Date.parse('2026-11-27T08:00:00+08:00'),createdAt:f.now,...extra});
 function commit(f,r,plan){f.l.plans.push(plan);f.l.planHistory.push({at:f.now,roundId:r.id,op:'create',id:plan.id,fromRevision:null,toRevision:1});}
 
 test('an in-shift request becomes a definition of real task items rather than taking another work shift',()=>{
  const f=fixture(),task=f.turn('打工的地方有工作让你处理');assert.equal(task.kind,'work-items');assert.equal(task.phase,'needs_definition');assert.equal(task.finalAction,null);assert.deepEqual(task.steps,[]);
- assert.equal(ownerTaskCandidates(f.l,f.now,f.data).length,0);f.data.now='· task-17 处理传菜 0 贝';f.data.at.now=f.now;const r=f.round(task,{definitionOnly:true});assert.equal(ownerTaskCandidates(f.l,f.now,f.data)[0].definitionOnly,true);
- assert.match(ownerTaskGuard(f.l,f.data,f.exec('do',{id:'work'}),true,f.now),/只登记/);
+ assert.equal(ownerTaskCandidates(f.l,f.now,f.data).length,0);f.data.now='· task-17 处理传菜 0 贝';f.data.at.now=f.now;const r=f.round(task);assert.equal(ownerTaskCandidates(f.l,f.now,f.data)[0].definitionOnly,false);
+ allowsAction(f,task,'do',{id:'work'});
  assert.throws(()=>define(f,task,[workStep('work')]),/真实 task/);
  f.observe(task,'now',{},'合成现场\n· task-17 处理传菜 0 贝\n· task-18 收拾桌子 0 贝');
  assert.throws(()=>define(f,task,[workStep('task-999')]),/真实 task/);
  define(f,task,[workStep('task-17'),workStep('task-18')]);assert.equal(task.finalAction.arguments.id,'task-17');
- assert.match(ownerTaskGuard(f.l,f.data,f.exec('do',{id:'task-17'}),true,f.now),/只登记/,'a definition-only turn stays local after definition');
+ allowsAction(f,task,'do',{id:'task-17'});
  assert.equal(r.id,f.l.round.id);const other=f.turn('你出门打个工去');assert.equal(other.kind,'work');assert.equal(other.finalAction.arguments.id,'work');
 });
 
@@ -35,8 +36,8 @@ test('work-item definitions wait locally until a fresh real choice exists, witho
  f.data.now='· task-17 处理传菜 0 贝';f.data.at.now=f.now-180001;assert.deepEqual(choices(),[]);f.data.at.now=f.now+1;assert.deepEqual(choices(),[]);
  f.data.at.now=f.now;f.data.errors={now:'读取失败'};assert.deepEqual(choices(),[]);delete f.data.errors.now;f.data.now='> · task-17 引用里的旧事项';assert.deepEqual(choices(),[]);
  f.data.now='当前无班内待办';const event={id:'synthetic-work',kind:'work',status:'pending',t:f.now-1,receivedAt:f.now,notBefore:f.now,provenance:{trusted:true,source:'world-notify'},text:'· task-17 处理传菜 0 贝'};f.l.queue.push(event);assert.deepEqual(choices(),[],'newer empty now supersedes an older notification');
- f.data.at.now=f.now-1000;assert.equal(choices()[0].definitionOnly,true);for(const change of [{status:'completed'},{kind:'talk'},{provenance:{trusted:false,source:'world-notify'}},{provenance:{trusted:true,source:'owner-control'}},{t:f.now-180001},{receivedAt:f.now-180001},{receivedAt:f.now+1},{notBefore:f.now+1},{text:'有班内工作等你处理，请先 world_now 查看'}]){const saved=structuredClone(event);Object.assign(event,change);assert.deepEqual(choices(),[],JSON.stringify(change));Object.assign(event,saved);}
- f.l.queue=[];f.data.now='· task-17 处理传菜 0 贝';f.data.at.now=f.now;assert.equal(choices()[0].definitionOnly,true);assert.deepEqual(task,before,'waiting and candidate inspection preserve the original request');
+ f.data.at.now=f.now-1000;assert.equal(choices()[0].definitionOnly,false);for(const change of [{status:'completed'},{kind:'talk'},{provenance:{trusted:false,source:'world-notify'}},{provenance:{trusted:true,source:'owner-control'}},{t:f.now-180001},{receivedAt:f.now-180001},{receivedAt:f.now+1},{notBefore:f.now+1},{text:'有班内工作等你处理，请先 world_now 查看'}]){const saved=structuredClone(event);Object.assign(event,change);assert.deepEqual(choices(),[],JSON.stringify(change));Object.assign(event,saved);}
+ f.l.queue=[];f.data.now='· task-17 处理传菜 0 贝';f.data.at.now=f.now;assert.equal(choices()[0].definitionOnly,false);assert.deepEqual(task,before,'waiting and candidate inspection preserve the original request');
  f.round(task,{definitionOnly:true});f.observe(task,'now',{},'· task-17 处理传菜 0 贝');f.observe(task,'now',{},'当前无班内待办');assert.throws(()=>define(f,task,[workStep('work')]),error=>error.code==='OWNER_WORK_ITEMS_WAIT'&&error.wait===true&&error.retryable===false);assert.deepEqual(task,before,'a no-options rejection does not turn a work-item request into another shift');
  f.observe(task,'now',{},'· task-17 处理传菜 0 贝');assert.throws(()=>define(f,task,[workStep('work')]),error=>error.code==='OWNER_WORK_ITEMS_INVALID_ACTION'&&error.retryable===false);define(f,task,[workStep('task-17')]);assert.equal(task.finalAction.arguments.id,'task-17');
 });
@@ -46,28 +47,28 @@ test('ordinary descriptions questions and quotations do not become new planning 
  assert.equal(f.l.ownerTasks,undefined);for(const text of ['请每天23:45规划明天的科研实验','你每天23:45规划明天的工作','打工的地方有工作让你处理'])assert.equal(f.turn(text,false),null,text);assert.equal(f.l.ownerTasks,undefined,'outside-world planning and work items remain deferred');
 });
 
-test('future needs-definition tasks can schedule a local definition round but cannot act before saved time',()=>{
+test('future needs-definition tasks can save a schedule without making the task record an action permission gate',()=>{
  const f=fixture(),task=f.turn('你明天去食堂打工'),candidate=ownerTaskCandidates(f.l,f.now,f.data).find(x=>x.ownerTaskId===task.id);
- assert.equal(candidate.definitionOnly,true);const r=f.round(task,{definitionOnly:true});
+ assert.equal(candidate.definitionOnly,false);const r=f.round(task);
  assert.throws(()=>define(f,task,[workStep('work')]),/未来时间/);
  const future=f.now+86400000;define(f,task,[workStep('work')],future);endOwnerTaskRound(f.l,r,true,f.now+1);
- assert.equal(task.phase,'pending');assert.equal(task.nextAt,future);assert.match(ownerTaskGuard(f.l,f.data,f.exec('go',{place:'synthetic-work'}),true,f.now),/只登记/);
- f.round(task);assert.match(ownerTaskGuard(f.l,f.data,f.exec('go',{place:'synthetic-work'}),true,f.now),/未到/);assert.equal(ownerTaskCandidates(f.l,future-1,f.data).length,0);
+ assert.equal(task.phase,'pending');assert.equal(task.nextAt,future);allowsAction(f,task,'go',{place:'synthetic-work'});
+ f.round(task);allowsAction(f,task,'go',{place:'synthetic-work'});assert.equal(ownerTaskCandidates(f.l,future-1,f.data).length,0);
  assert.ok(ownerTaskCandidates(f.l,future,f.data).some(x=>x.ownerTaskId===task.id));
 });
 
-test('repeated missing definitions have bounded attempts with backoff and a visible local issue',()=>{
+test('legacy missing-definition attempts retain their audit issue without permanently disabling ordinary continuation',()=>{
  const f=fixture(),task=f.turn('你明天去食堂打工');
  for(let attempt=0;attempt<3;attempt++){const r=f.round(task,{definitionOnly:true});endOwnerTaskRound(f.l,r,true,f.now+1);assert.equal(task.definitionAttempts,attempt+1);if(attempt<2){assert.ok(task.definitionNextAt>=f.now+600000);f.time(task.definitionNextAt);}}
- assert.equal(task.phase,'blocked');assert.equal(task.contractIssue.code,'definition-attempt-limit');assert.equal(ownerTaskCandidates(f.l,f.now+86400000,f.data).length,0);
- f.time(f.now+600000);f.turn('你明天去食堂打工');assert.equal(task.phase,'needs_definition');assert.equal(task.definitionAttempts,0);assert.match(ownerTaskGuard(f.l,f.data,f.exec('go',{place:'synthetic-work'},f.owner),false,f.now),/未来时间/);
+ assert.equal(task.phase,'blocked');assert.equal(task.contractIssue.code,'definition-attempt-limit');const next=ownerTaskCandidates(f.l,f.now+86400000,f.data).find(row=>row.ownerTaskId===task.id);assert.ok(next);assert.equal(next.definitionOnly,false);assert.equal(task.definitionAttempts,3);
+ f.time(f.now+600000);f.turn('你明天去食堂打工');assert.equal(task.phase,'needs_definition');assert.equal(task.definitionAttempts,0);allowsAction(f,task,'go',{place:'synthetic-work'},false,f.owner);
 });
 
 test('an explicit full-capacity rule schedules bounded read-only checks without replaying an unsubmitted action',()=>{
  const f=fixture(),task=f.turn('你出门打个工去');f.round(task);
  const failure=f.observe(task,'do',{id:'work'},'Error: [E_RULE] 合成岗位人手够了（4/4），最早 12:20 有人下班','failed');
  assert.equal(task.phase,'blocked');assert.equal(f.l.recovery,false);assert.ok(task.nextAt>=f.now+180000&&task.nextAt<=f.now+1800000);
- const candidate=ownerTaskCandidates(f.l,task.nextAt,f.data)[0];assert.equal(candidate.readOnly,true);assert.match(ownerTaskGuard(f.l,f.data,f.exec('do',{id:'work'}),true,task.nextAt),/只读复查/);
+ const candidate=ownerTaskCandidates(f.l,task.nextAt,f.data)[0];assert.equal(candidate.readOnly,true);allowsAction(f,task,'do',{id:'work'});
  f.time(task.nextAt);let r=f.round(task);f.observe(task,'now',{},'· work 合成岗位（4/4）满员，最早 12:40 有人下班');endOwnerTaskRound(f.l,r,true,f.now+1);assert.equal(task.phase,'blocked');assert.ok(task.nextAt>f.now);
  f.time(task.nextAt);r=f.round(task);f.observe(task,'now',{},'· work 合成岗位（3/4）0 贝');endOwnerTaskRound(f.l,r,true,f.now+1);assert.equal(task.phase,'pending');assert.equal(task.availability.checkOnly,false);assert.ok(task.nextAt>=f.now+180000);assert.equal(task.receipts.length,0);assert.equal(task.availability.failureCallId,failure.id);
  const later=fixture(),laterTask=later.turn('你出门打个工去');later.round(laterTask);later.observe(laterTask,'do',{id:'work'},'[E_RULE] 合成岗位满员（4/4），最早 13:10 有人下班','failed');assert.equal(laterTask.nextAt,Date.parse('2026-11-26T13:10:00+08:00'),'an explicit earliest time is not shortened to the default thirty-minute recheck cap');
@@ -96,7 +97,7 @@ test('old known misclassified tasks reconcile idempotently without changing inst
 
 test('daily 23:45 planning is one local obligation with no synthetic world action or claimed QQ delivery',()=>{
  const f=fixture(Date.parse('2026-11-26T22:00:00+08:00')),task=f.turn(planningInstruction);assert.equal(task.kind,'planning');assert.equal(task.phase,'pending');assert.equal(task.finalAction,null);assert.equal(task.nextAt,Date.parse('2026-11-26T23:45:00+08:00'));assert.equal(ownerTaskCandidates(f.l,f.now,f.data).length,0);
- f.time(task.nextAt);const candidate=ownerTaskCandidates(f.l,f.now,f.data)[0];assert.equal(candidate.planningOnly,true);const r=f.round(task,{planningOnly:true});assert.match(ownerTaskGuard(f.l,f.data,f.exec('do',{id:'work'}),true,f.now),/本地次日规划/);
+ f.time(task.nextAt);const candidate=ownerTaskCandidates(f.l,f.now,f.data)[0];assert.equal(candidate.planningOnly,true);const r=f.round(task,{planningOnly:true});allowsAction(f,task,'do',{id:'work'});
  assert.throws(()=>define(f,task,[workStep('work')]),/本地次日计划/);
  commit(f,r,nextPlan(f));endOwnerTaskRound(f.l,r,true,f.now+1000);const completed=task.planning.completed['2026-11-26'];assert.ok(completed);assert.equal(completed.localOnly,true);assert.equal(completed.communicationStatus,'not-claimed');assert.equal(task.status,'active');assert.equal(task.nextAt,Date.parse('2026-11-27T23:45:00+08:00'));assert.equal(task.receipts.length,0);
  const before=structuredClone(task);assert.equal(ownerTaskPlanningComplete(f.l,r,f.now+2000).alreadyCompleted,true);endOwnerTaskRound(f.l,r,true,f.now+2000);assert.deepEqual(task,before);assert.equal(ownerTaskCandidates(f.l,f.now+3000,f.data).length,0);

@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import {ownerTaskCandidates,ownerTaskInFlight} from './owner-tasks.mjs';
+import {ownerTaskCandidates} from './owner-tasks.mjs';
 import {dayKey,planOpen} from './state.mjs';
 import {provedWorkSource} from './plans.mjs';
 import {workHoursAllowed} from './work-hours.mjs';
@@ -33,18 +33,12 @@ export function candidates(l,data,cfg,now){
   const doing=data.state?.doing,end=Date.parse(doing?.until||doing?.endAt||data.state?.where?.arrive||'')||Number(doing?.endAt)||0;
   const long=!!doing||data.state?.figure?.asleep||data.state?.where?.kind==='trip';
   if(cfg.idleEnabled&&!working&&now>=l.nextIdle&&(!long||end>0&&end<=now))list.push({id:'idle',kind:'idle',priority:4,bucket:'idle',text:'照顾基本生活，允许保持现状并等待。',group:[]});
-  const owned=(l.ownerTasks||[]).filter(t=>t.status==='active'&&l.owner&&l.persona&&t.owner===l.owner&&t.persona===l.persona);
-  const inFlight=ownerTaskInFlight;
-  const runnable=new Set(list.filter(c=>c.ownerTaskId).map(c=>c.ownerTaskId));
+  const owned=(l.ownerTasks||[]).filter(t=>t.status==='active'&&t.focus?.state!=='paused'&&l.owner&&l.persona&&t.owner===l.owner&&t.persona===l.persona);
   const journeys=owned.filter(t=>t.kind==='journey'&&!t.optional).sort((a,b)=>b.createdAt-a.createdAt);
-  const focusedJourney=journeys.find(t=>inFlight(t)||runnable.has(t.id)&&!(t.notBefore>now));
-  // A future purpose remains durable, but reserves attention only when due.
-  // Actual in-flight owner work still protects its activity from idle plans.
-  const ownerWaiting=owned.some(inFlight)||!!focusedJourney;
+  // Purposes contribute priority; unfinished records do not lock other activities.
   const seen=new Set();return list.sort((a,b)=>a.priority-b.priority||(a.t||a.plan?.nextAt||0)-(b.t||b.plan?.nextAt||0)).filter(c=>{
     if(journeys[0]&&c.kind==='owner'&&c.t<journeys[0].createdAt)return false;
-    if(focusedJourney&&c.ownerTaskId&&c.ownerTaskId!==focusedJourney.id){const other=l.ownerTasks.find(t=>t.id===c.ownerTaskId);if(other&&other.kind!=='planning'&&other.createdAt<=focusedJourney.createdAt)return false;}
-    if(ownerWaiting&&c.priority>1&&!c.ownerTaskId&&!c.ownerTaskIds?.length)return false;const k=c.kind+':'+c.id;if(seen.has(k))return false;seen.add(k);return true;});
+const k=c.kind+':'+c.id;if(seen.has(k))return false;seen.add(k);return true;});
 }
 export function admission(l,task,cfg,{now,estimate,costSummary}={}){
   now=effectiveNow(l,now);
@@ -74,7 +68,7 @@ export function admission(l,task,cfg,{now,estimate,costSummary}={}){
     if(!p||!planOpen(p.status)||!(['pending','active'].includes(p.status)||task.kind==='plan-definition'&&p.status==='blocked'&&p.scheduleIssue?.code==='trigger-needs-definition'))return blocked('计划不再可执行');
     if(p.lastCheckedAt)next=Math.max(next,p.lastCheckedAt+cfg.planRecheckMinMs);
   }
-  if(task.ownerTaskId){const t=(l.ownerTasks||[]).find(t=>t.id===task.ownerTaskId);if(!t||t.status!=='active'||!(['pending','ready'].includes(t.phase)||task.definitionOnly&&t.phase==='needs_definition'||task.readOnly&&t.phase==='blocked'&&t.availability?.checkOnly))return blocked('主人任务正在等待真实回执');if(t.lastCheckedAt)next=Math.max(next,t.lastCheckedAt+cfg.planRecheckMinMs);}
+  if(task.ownerTaskId){const t=(l.ownerTasks||[]).find(t=>t.id===task.ownerTaskId);if(!t||t.status!=='active'||t.focus?.state==='paused'||t.owner!==l.owner||t.persona!==l.persona)return blocked('当前目的已变化，旧候选不再启动');if(t.lastCheckedAt)next=Math.max(next,t.lastCheckedAt+cfg.planRecheckMinMs);}
   if(now<next)return blocked(urgent?'紧急事件正在频率冷却':'普通回合或同一计划正在冷却',next);
   if(estimate){
     if(estimate.roundPromptTokens>cfg.roundPromptEstimatedTokenLimit)return blocked('本轮新增提示超过估算体积门槛');

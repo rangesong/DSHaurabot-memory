@@ -4,7 +4,7 @@ import {LifeEngine,worldNames} from '../extensions/aurabot/fish-world/life.mjs';
 import {newLife,enqueue} from '../extensions/aurabot/fish-world/state.mjs';
 import {candidates,admission} from '../extensions/aurabot/fish-world/governance.mjs';
 import {carryForward,chooseWindow,windowPrompt} from '../extensions/aurabot/fish-world/world-window.mjs';
-import {defineOwnerTask,advanceOwnerTasks,endOwnerTaskRound,ownerTaskSnapshot,worldToolName} from '../extensions/aurabot/fish-world/owner-tasks.mjs';
+import {defineOwnerTask,advanceOwnerTasks,endOwnerTaskRound,ownerTaskSnapshot,worldToolName,ownerTaskGuard} from '../extensions/aurabot/fish-world/owner-tasks.mjs';
 const W='mcp__fish-world__world_',start=Date.parse('2026-11-22T15:00:00+08:00');
 function fixture(){let now=start,calls=0;const identity={owner:'fixture-owner',persona:'fixture'},data={version:3,fishId:'fixture#1',state:{where:{kind:'home'}},at:{state:now},life:newLife(now)};
  Object.assign(data.life,identity);const bridge={data,identityReady:true,change(fn){const before=structuredClone(data);try{return fn(data);}catch(e){Object.assign(data,before);throw e;}}};
@@ -25,9 +25,9 @@ test('a current owner command persists without model registration, while quotes 
  assert.equal(f.turn('你出门打个工去'),null);assert.equal(f.e.l.ownerTasks.length,1);f.turn('你好');assert.equal(f.e.l.ownerTaskContexts['owner-session'].taskId,null);assert.equal(f.e.l.ownerTasks[0].status,'active');
 });
 
-test('the real failure chain keeps work pending after travel, rejects premature work locally and links the arrival',()=>{
+test('travel keeps the work purpose pending while a real premature-action rejection and arrival remain separate evidence',()=>{
  const f=fixture(),t=f.turn('你出门打个工去');assert.equal(travel(f).reason,undefined);assert.equal(t.phase,'travelling');assert.equal(t.destination.id,'canteen');
- const prior=f.e.l.journal.length,early=f.execute('do',{id:'work'});assert.match(early.reason,/仍在路上/);assert.equal(f.e.l.journal.length,prior);
+ const prior=f.e.l.journal.length,before=structuredClone(t),early=f.execute('do',{id:'work'},'Error: [E_RULE] 合成地点尚未到达，不能开始。',true);assert.equal(early.reason,undefined);assert.equal(f.e.l.journal.length,prior+1);assert.deepEqual(t,before,'the server rejection does not erase the pending travel purpose');
  arrive(f);const q=f.e.l.queue.at(-1);assert.equal(q.status,'pending');assert.deepEqual(q.ownerTaskIds,[t.id]);assert.equal(t.phase,'ready');assert.equal(t.status,'active');assert.equal(t.nextStep,'你出门打个工去');
  const all=candidates(f.e.l,f.data,f.e.cfg,f.now);assert.equal(all[0].ownerTaskId,t.id);assert.equal(all[0].bucket,'work');assert.deepEqual(all[0].group.map(q=>q.id),[q.id]);
 });
@@ -45,11 +45,11 @@ test('fresh exact destination state can recover a missed arrival, never clock-on
  f.data.at.state=f.now;advanceOwnerTasks(f.e.l,f.data,f.now);assert.equal(t.phase,'ready');assert.equal(t.arrivalState.placeId,'canteen');assert.equal(t.status,'active');
 });
 
-test('work cannot be replaced by food, and a started shift waits for its own real settlement',()=>{
+test('food can be acted on without completing the work purpose, and a started shift waits for its own real settlement',()=>{
  const f=fixture(),t=f.turn('你出门打个工去');travel(f);arrive(f);background(f,t);
  f.execute('now',{},'合成现场：work 0 贝；buy-lunch 0 贝',false,f.bg);f.execute('profile',{},'fixture#1',false,f.bg);
  let approved=f.e.intent({tool:'world_do',arguments:'{"id":"buy-lunch"}',category:'daily',cost:0,evidence:'buy-lunch 0 贝'}).arguments;
- assert.match(f.execute('do',approved,'合成饭',false,f.bg).reason,/不能替代/);assert.equal(t.phase,'ready');
+ const before=structuredClone({phase:t.phase,steps:t.steps,completedSteps:t.completedSteps,receipts:t.receipts,instruction:t.instruction});assert.equal(f.execute('do',approved,'合成饭',false,f.bg).reason,undefined);assert.deepEqual({phase:t.phase,steps:t.steps,completedSteps:t.completedSteps,receipts:t.receipts,instruction:t.instruction},before);
  approved=f.e.intent({tool:'world_do',arguments:'{"id":"work"}',category:'work',cost:0,evidence:'work 0 贝'}).arguments;
  assert.equal(f.execute('do',approved,'开始合成短工',false,f.bg).reason,undefined);assert.equal(t.phase,'working');assert.equal(t.status,'active');
  enqueue(f.data,{kind:'done',text:'吃饭结束了',t:f.now+1},f.now+1);assert.equal(t.status,'active');
@@ -57,13 +57,13 @@ test('work cannot be replaced by food, and a started shift waits for its own rea
 });
 
 test('buy then return is a generic two-step contract: buying and departure do not complete the return',()=>{
- const f=fixture(),t=f.turn('请去合成商店买本书再回来');assert.equal(t.finalAction,null);assert.match(f.execute('go',{place:'shop'}).reason,/完整后续步骤/);
+ const f=fixture(),t=f.turn('请去合成商店买本书再回来');assert.equal(t.finalAction,null);const empty=structuredClone(t);assert.equal(f.execute('go',{place:'shop'},'Error: [E_RULE] 合成现场暂不能出发。',true).reason,undefined);assert.deepEqual(t,empty);
  defineOwnerTask(f.e.l,{id:t.id,expectedRevision:t.revision,steps:[{tool:'world_do',arguments:'{"id":"buy-book"}',nextStep:'买书'},{tool:'world_go',arguments:'{"place":"home"}',nextStep:'带书回家'}]},{sessionId:f.owner.session.id,now:f.now});
  f.execute('go',{place:'shop'},'15:10 到合成商店。');f.time(start+600000);enqueue(f.data,{kind:'arrive',text:'到了合成商店',t:f.now},f.now);assert.equal(t.phase,'ready');
- f.execute('do',{id:'buy-book'},'合成购买成功');assert.equal(t.stepIndex,1);assert.equal(t.status,'active');
+ f.execute('do',{id:'buy-book'},'你买了 1 本合成书，花了 5 贝，还剩 20 贝。');assert.equal(t.stepIndex,1);assert.equal(t.status,'active');
  f.execute('go',{place:'home'},'15:20 到家。');assert.equal(t.status,'active');assert.equal(t.phase,'travelling');f.time(start+1200000);enqueue(f.data,{kind:'arrive',text:'到了家',t:f.now},f.now);
  assert.equal(t.status,'completed');assert.equal(t.completedSteps.length,2);assert.equal(t.instruction,'请去合成商店买本书再回来');
- assert.match(f.execute('go',{place:'home'}).reason,/已经有完整成功依据/);
+ const completed=structuredClone(t);assert.equal(f.execute('go',{place:'home'},'Error: [E_RULE] 合成现场没有新的路程。',true).reason,undefined);assert.deepEqual(t,completed,'a completed record is not an action permission lock or a new completion');
 });
 
 test('an activity done contract waits for the exact trusted event before its next step',()=>{
@@ -92,10 +92,10 @@ test('unknown mutations cannot be repeated or redefined after a new round',()=>{
  f.turn('你出门打个工去');assert.equal(f.e.l.ownerTasks.length,1);assert.equal(candidates({...f.e.l,recovery:false},f.data,f.e.cfg,f.now).some(c=>c.ownerTaskId===t.id),false);
 });
 
-test('future commands require an explicit schedule and preserve existing quotas and interval settings',()=>{
- const f=fixture(),t=f.turn('你明天去食堂打工');assert.equal(t.phase,'needs_definition');assert.match(travel(f).reason,/未来时间/);
+test('future commands retain their explicit schedule without restricting independent actions or changing quotas and intervals',()=>{
+ const f=fixture(),t=f.turn('你明天去食堂打工');assert.equal(t.phase,'needs_definition');const beforeDefinition=structuredClone(t);assert.equal(f.execute('go',{place:'canteen'},'Error: [E_RULE] 合成现场暂不能出发。',true).reason,undefined);assert.deepEqual(t,beforeDefinition);
  assert.throws(()=>defineOwnerTask(f.e.l,{id:t.id,expectedRevision:t.revision,steps:[{tool:'world_do',arguments:'{"id":"work"}',nextStep:'明天上工'}]},{sessionId:f.owner.session.id,now:f.now}),/未来时间/);
- defineOwnerTask(f.e.l,{id:t.id,expectedRevision:t.revision,nextAt:start+86400000,steps:[{tool:'world_do',arguments:'{"id":"work"}',nextStep:'明天上工'}]},{sessionId:f.owner.session.id,now:f.now});assert.match(travel(f).reason,/未到/);
+ defineOwnerTask(f.e.l,{id:t.id,expectedRevision:t.revision,nextAt:start+86400000,steps:[{tool:'world_do',arguments:'{"id":"work"}',nextStep:'明天上工'}]},{sessionId:f.owner.session.id,now:f.now});const scheduled=structuredClone(t);assert.equal(f.execute('go',{place:'canteen'},'Error: [E_RULE] 合成现场暂不能出发。',true).reason,undefined);assert.deepEqual(t,scheduled);
  const before=structuredClone(f.e.l.days);assert.equal(candidates(f.e.l,f.data,f.e.cfg,start+86399999).some(c=>c.ownerTaskId===t.id),false);assert.deepEqual(f.e.l.days,before);
  const c=candidates(f.e.l,f.data,f.e.cfg,start+86400000).find(c=>c.ownerTaskId===t.id);f.e.l.days['2026-11-23']={work:96};assert.equal(admission(f.e.l,c,f.e.cfg,{now:start+86400000}).budgetExhausted,true);assert.equal(f.e.cfg.workMs,600000);assert.equal(f.e.cfg.idleMs,1800000);
 });
@@ -107,9 +107,9 @@ test('definitions reject foreign sessions, revisions, read-only final actions an
  assert.equal(t.finalAction.arguments.id,'work');assert.deepEqual(t.completedSteps,[]);
 });
 
-test('while travelling or working, unrelated idle plans cannot interrupt the owner chain',()=>{
+test('a travelling task remains tracked without removing unrelated plans and idle from scheduling',()=>{
  const f=fixture(),t=f.turn('你出门打个工去');travel(f);f.e.l.plans.push({id:'food-plan',revision:1,status:'pending',nextAt:start,goal:'合成吃饭'});f.e.l.nextIdle=start;
- assert.equal(candidates(f.e.l,f.data,f.e.cfg,start+300000).some(c=>c.planId==='food-plan'||c.kind==='idle'),false);assert.equal(ownerTaskSnapshot(f.e.l)[0].id,t.id);
+ const before=structuredClone(t),list=candidates(f.e.l,f.data,f.e.cfg,start+300000);assert.equal(list.some(c=>c.planId==='food-plan'),true);assert.equal(list.some(c=>c.kind==='idle'),true);assert.equal(ownerTaskSnapshot(f.e.l)[0].id,t.id);assert.deepEqual(t,before);
 });
 
 test('native action names normalize only the exact fish-world aliases',()=>{
@@ -119,7 +119,7 @@ test('native action names normalize only the exact fish-world aliases',()=>{
 test('an optional library suggestion does not interrupt an ongoing owner journey',()=>{
  const f=fixture(),work=f.turn('你出门打个工去');travel(f);background(f,work);const revision=f.e.l.revision;
  const optional=f.turn('你没事可以去图书馆看看书');assert.equal(optional.optional,true);assert.equal(f.e.l.round.status,'running');assert.equal(f.e.l.revision,revision);
- assert.equal(candidates(f.e.l,f.data,f.e.cfg,start+300000).some(c=>c.ownerTaskId===optional.id),false);assert.match(f.execute('go',{place:'library'}).reason,/不能打断/);
+ assert.equal(candidates(f.e.l,f.data,f.e.cfg,start+300000).some(c=>c.ownerTaskId===optional.id),false);const before=structuredClone(work),exec={name:W+'go',arguments:{place:'library'},agent:f.owner};assert.equal(ownerTaskGuard(f.e.l,f.data,exec,false,f.now),undefined);assert.match(f.e.guard(exec,false,true),/后台正在收尾/,'the live global background lock remains authoritative');assert.deepEqual(work,before);
 });
 
 test('explicit renewed owner input can retry a known blocked task, while a repeated prompt token cannot',()=>{
@@ -133,7 +133,7 @@ test('a negative work instruction cancels only owner work tasks instead of creat
 
 test('a general instruction outside the known world domain cannot launch a fish round; an actual world invocation binds its purpose',()=>{
  const f=fixture();assert.equal(f.turn('帮我做一份报告'),null);assert.equal(f.e.l.ownerTasks,undefined);assert.ok(f.e.l.ownerTaskContexts['owner-session'].deferred);
- assert.equal(f.turn('请去办事处取东西再回来'),null);assert.match(f.execute('go',{place:'office'}).reason,/完整后续步骤/);assert.equal(f.e.l.ownerTasks[0].instruction,'请去办事处取东西再回来');assert.equal(f.e.l.ownerTasks[0].status,'active');
+ assert.equal(f.turn('请去办事处取东西再回来'),null);assert.equal(f.execute('go',{place:'office'},'Error: [E_RULE] 合成现场暂不能出发。',true).reason,undefined);assert.equal(f.e.l.ownerTasks[0].instruction,'请去办事处取东西再回来');assert.equal(f.e.l.ownerTasks[0].status,'active');assert.equal(f.e.l.ownerTasks[0].finalAction,null);assert.equal(f.e.l.journal.length,1);assert.equal(f.e.l.journal[0].status,'failed','the real invocation records its rejection rather than a fabricated successful departure');
 });
 
 test('task business actions ignore model request IDs, retain completed prefixes and reject redeclaring an accomplished step',()=>{

@@ -8,21 +8,21 @@ const W='mcp__fish-world__world_',start=Date.parse('2026-11-27T12:00:00+08:00'),
 const step=(id,nextStep,extra={})=>({tool:'world_do',arguments:JSON.stringify({id}),nextStep,...extra});
 function fixture(){let now=start,sequence=0;const l={...newLife(now),...identity},data={life:l,at:{state:now},state:{where:{kind:'home'}}};return {l,data,get now(){return now;},time(at){now=at;},turn(text){return rememberOwnerTurn(l,identity,{text,sessionId:sid,turnKey:++sequence,confirmedWorld:true},now);},define(t,steps,extra={}){return defineOwnerTask(l,{id:t.id,expectedRevision:t.revision,steps,...extra},{sessionId:sid,now,data});},round(t,extra={}){return l.round={id:'round-'+(++sequence),sessionId:bg,status:'running',ownerTaskId:t.id,startedAt:now,definitionOnly:false,report:{},...extra};},receipt(t,id,text,status='confirmed'){const row={id:'receipt-'+(++sequence),ownerTaskId:t.id,tool:W+'do',args:JSON.stringify({id}),status,isError:status!=='confirmed',at:now,finishedAt:now,sessionId:sid,result:text};l.journal.push(row);noteOwnerTaskResult(l,data,row,now);return row;}};}
 
-test('cooking starts a finite activity and cannot advance to eating before its real completion',()=>{
+test('cooking remains tracked until real completion without making the task an action permission gate',()=>{
  const f=fixture(),t=f.turn('请煮饭再吃饭');f.define(t,[step('cook','做好饭'),step('eat','吃饭')]);f.receipt(t,'cook','好的，你开始煮白米饭，12:20 结束。\n—— 现在 12:00 · 在家 · 在做：煮白米饭（12:20 结束）');assert.equal(t.phase,'waiting_event');assert.equal(t.stepIndex,0);assert.equal(t.completedSteps.length,0);
- const r=f.round(t);assert.match(ownerTaskGuard(f.l,f.data,{name:W+'do',arguments:{id:'eat'},agent:{session:{id:bg}}},true,f.now),/完成|结束/);assert.equal(r.ownerTaskId,t.id);f.time(start+1200000);enqueue(f.data,{kind:'done',t:f.now,text:'煮白米饭：饭做好了，热气散了出来'},f.now);assert.equal(t.phase,'pending');assert.equal(t.finalAction.arguments.id,'eat');assert.equal(t.stepIndex,1);
+ const r=f.round(t),before=structuredClone(t);assert.equal(ownerTaskGuard(f.l,f.data,{name:W+'do',arguments:{id:'eat'},agent:{session:{id:bg}}},true,f.now),undefined);assert.deepEqual(t,before);assert.equal(r.ownerTaskId,t.id);f.time(start+1200000);enqueue(f.data,{kind:'done',t:f.now,text:'煮白米饭：饭做好了，热气散了出来'},f.now);assert.equal(t.phase,'pending');assert.equal(t.finalAction.arguments.id,'eat');assert.equal(t.stepIndex,1);
 });
 
-test('reading starts an activity and a background return cannot interrupt it',()=>{
- const f=fixture(),t=f.turn('请去图书馆读书然后回家');f.define(t,[step('read','读完书'),{tool:'world_go',arguments:'{"place":"home"}',nextStep:'回家'}]);f.receipt(t,'read','好的，你开始读合成书，12:30 结束。\n—— 现在 12:00 · 在图书馆 · 在做：读合成书（12:30 结束）');f.round(t);assert.equal(t.phase,'waiting_event');assert.match(ownerTaskGuard(f.l,f.data,{name:W+'go',arguments:{place:'home'},agent:{session:{id:bg}}},true,f.now),/完成|结束/);f.time(start+1800000);enqueue(f.data,{kind:'done',t:f.now,text:'读合成书：最后一页看完了'},f.now);assert.equal(t.finalAction.tool,W+'go');assert.equal(t.phase,'pending');
+test('reading remains pending for actual completion while its task record allows another action',()=>{
+ const f=fixture(),t=f.turn('请去图书馆读书然后回家');f.define(t,[step('read','读完书'),{tool:'world_go',arguments:'{"place":"home"}',nextStep:'回家'}]);f.receipt(t,'read','好的，你开始读合成书，12:30 结束。\n—— 现在 12:00 · 在图书馆 · 在做：读合成书（12:30 结束）');f.round(t);assert.equal(t.phase,'waiting_event');const before=structuredClone(t);assert.equal(ownerTaskGuard(f.l,f.data,{name:W+'go',arguments:{place:'home'},agent:{session:{id:bg}}},true,f.now),undefined);assert.deepEqual(t,before);f.time(start+1800000);enqueue(f.data,{kind:'done',t:f.now,text:'读合成书：最后一页看完了'},f.now);assert.equal(t.finalAction.tool,W+'go');assert.equal(t.phase,'pending');
 });
 
 test('an immediate purchase still completes its receipt step normally',()=>{
- const f=fixture(),t=f.turn('请去商店买一袋米');f.define(t,[step('rice','买一袋米')]);f.receipt(t,'rice','你买了 1 袋米。\n—— 现在 12:00 · 在商店');assert.equal(t.status,'completed');assert.equal(t.completedSteps.length,1);
+ const f=fixture(),t=f.turn('请去商店买一袋米');f.define(t,[step('rice','买一袋米')]);f.receipt(t,'rice','你买了 1 袋米，花了 5 贝，还剩 20 贝。\n—— 现在 12:00 · 在商店');assert.equal(t.status,'completed');assert.equal(t.completedSteps.length,1);
 });
 
-test('new empty buy and activity contracts request definition instead of launching an action round with no final action',()=>{
- for(const text of ['请去商店买东西','请去小镇办点事']){const f=fixture(),t=f.turn(text);assert.equal(t.finalAction,null);assert.equal(t.phase,'needs_definition');assert.equal(ownerTaskCandidates(f.l,f.now,f.data)[0].definitionOnly,true);}
+test('new empty buy and activity contracts keep their purpose without forcing a definition-only round',()=>{
+ for(const text of ['请去商店买东西','请去小镇办点事']){const f=fixture(),t=f.turn(text);assert.equal(t.finalAction,null);assert.equal(t.phase,'needs_definition');const before=structuredClone(t),candidate=ownerTaskCandidates(f.l,f.now,f.data)[0];assert.equal(candidate.definitionOnly,false);assert.equal(candidate.ownerTaskId,t.id);assert.equal(ownerTaskGuard(f.l,f.data,{name:W+'go',arguments:{place:'fixture-place'},agent:{session:{id:sid}}},false,f.now),undefined);assert.deepEqual(t,before);}
 });
 
 test('a declared done wait can derive the actual label from its start receipt without predicting the narrative',()=>{
@@ -34,14 +34,14 @@ test('successful local definition clears the ten-minute check cooldown for ordin
 });
 
 test('a current ordinary read task keeps same-session action attribution after an owner question',()=>{
- const f=fixture(),t=f.turn('请去图书馆读书');assert.ok(t.finalAction);f.turn('书看完了吗？');const exec={name:W+'do',arguments:{id:'read'},agent:{session:{id:'session-'+sid}}};assert.equal(taskForExecution(f.l,exec)?.id,t.id);assert.equal(taskForExecution(f.l,{...exec,agent:{session:{id:'foreign'}}}),undefined);
+ const f=fixture(),t=f.turn('请去图书馆读书');assert.ok(t.finalAction);f.turn('书看完了吗？');const exec={name:W+'do',arguments:{id:'read'},agent:{session:{id:'session-'+sid}}};assert.equal(taskForExecution(f.l,exec)?.id,t.id);assert.equal(taskForExecution(f.l,{...exec,arguments:{id:'unrelated'}}),undefined);const final=t.finalAction;t.finalAction=null;assert.equal(taskForExecution(f.l,exec),undefined,'an empty contract is never inferred for a private mutation');t.finalAction=final;t.focus={state:'paused'};assert.equal(taskForExecution(f.l,exec),undefined,'a paused purpose is never selected by persistent mutation fallback');t.focus.state='active';assert.equal(taskForExecution(f.l,{...exec,agent:{session:{id:'foreign'}}}),undefined);
 });
 
 test('finite activity evidence requires the exact start label and final server primary activity, never a busy footer or parallel tea',()=>{
  const footer='—— 现在 12:00 · 在图书馆 · 在做：读合成书（12:30 结束）';assert.equal(finiteActivityFromReceipt('好的，你开始读合成书了。\n'+footer).label,'读合成书');
  for(const text of ['你买了一本书。\n'+footer,'好的，你开始读合成书评，12:30 结束。\n'+footer,'好的，你开始看看车了。\n—— 现在 12:00 · 在车行 · 在做：看看车','好的，你开始读合成书，12:30 结束。\n> '+footer,'好的，你开始读合成书，12:30 结束。\n'+footer+'\n> 引用尾注'])assert.equal(finiteActivityFromReceipt(text),null,text);
  assert.equal(finiteActivityFromReceipt('好的，你开始泡茶，12:05 结束。\n'+footer+' · 同时：泡茶（12:05 结束）').blocking,false);
- const f=fixture(),t=f.turn('请去商店买一本书');f.define(t,[step('book','买书')]);f.receipt(t,'book','你买了一本书。\n'+footer);assert.equal(t.status,'completed','an immediate purchase is not held for an unrelated existing reading activity');
+ const f=fixture(),t=f.turn('请去商店买一本书');f.define(t,[step('book','买书')]);f.receipt(t,'book','你买了 1 本合成书，花了 5 贝，还剩 20 贝。\n'+footer);assert.equal(t.status,'completed','an immediate purchase is not held for an unrelated existing reading activity');
 });
 
 test('ETA and idle state do not complete a finite action, and snapshot keeps the original activity evidence',()=>{

@@ -26,10 +26,10 @@ test('parallel eating binds its exact label and clock inside a combined footer a
  const text='好的，你一边看书一边吃合成饭，12:15 吃完。\n—— 现在 12:00 · 在家 · 在做：看书（12:30 结束）、吃合成饭（12:15 吃完）',parsed=finiteActivityFromReceipt(text);assert.equal(parsed.label,'吃合成饭');assert.equal(parsed.blocking,false);const f=fixture(text);done(f,'吃合成饭结束了');assert.equal(f.t.stepIndex,1);
 });
 
-test('parallel tea and laundry do not reserve global attention, while their own ordered return still waits',()=>{
+test('parallel tea and laundry keep their unfinished steps without blocking other activity permissions',()=>{
  for(const [label,note]of [['泡杯合成茶','这件事不占手，做着的时候还能做别的；出门就停了。'],['洗合成衣服','这件事不占手，做着的时候还能做别的；出门也照样做完。']]){
   const text='好的，你开始'+label+'，12:20 结束。'+note+'\n—— 现在 12:00 · 在家 · 在做：做合成菜（12:10 做好）、'+label+'（12:20 结束）',f=fixture(text);assert.equal(f.t.activity.blocking,false);f.l.queue.push({id:'other-message',kind:'message',priority:2,bucket:'social',t:at,notBefore:at,status:'pending',sender:'synthetic-peer',provenance:{trusted:true,source:'world-notify'}});assert.ok(candidates(f.l,{state:{},life:f.l},{...defaults,idleEnabled:false},at).some(c=>c.id==='other-message'));
-  f.l.round={id:'same-task',sessionId:bg,status:'running',ownerTaskId:f.t.id};assert.match(ownerTaskGuard(f.l,{}, {name:W+'go',arguments:{place:'home'},agent:{session:{id:bg}}},true,at),/完成|结束/);
+  f.l.round={id:'same-task',sessionId:bg,status:'running',ownerTaskId:f.t.id};const before=structuredClone(f.t);assert.equal(ownerTaskGuard(f.l,{}, {name:W+'go',arguments:{place:'home'},agent:{session:{id:bg}}},true,at),undefined);assert.deepEqual(f.t,before);assert.equal(f.t.phase,'waiting_event');assert.equal(f.t.stepIndex,0);
   const optional=rememberOwnerTurn(f.l,{owner,persona},{text:'你没事可以去图书馆读书',sessionId:sid,turnKey:2,confirmedWorld:true},at);assert.ok(ownerTaskCandidates(f.l,at+180000,{state:{}}).some(task=>task.ownerTaskId===optional.id));f.l.round.ownerTaskId=optional.id;assert.equal(ownerTaskGuard(f.l,{state:{}},{name:W+'do',arguments:{id:'read'},agent:{session:{id:bg}}},true,at+180000),undefined);
  }
 });

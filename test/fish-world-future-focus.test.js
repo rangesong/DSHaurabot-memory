@@ -15,6 +15,22 @@ function fixture(patch={}){
 }
 const has=(list,id)=>list.some(candidate=>candidate.id===id||candidate.ownerTaskId===id);
 
+test('missing steps, a known waiting state and exhausted record-definition attempts admit an ordinary continuation round',()=>{
+ for(const phase of ['needs_definition','waiting_evidence','blocked']){
+  const f=fixture({phase,nextAt:0,notBefore:0,definitionAttempts:9,contractIssue:{code:'definition-attempt-limit'}}),task=f.read().find(c=>c.ownerTaskId===f.journey.id);
+  assert.ok(task,phase);assert.equal(task.definitionOnly,false);assert.equal(admission(f.life,task,f.cfg,{now:NOW}).allowed,true,phase);
+ }
+});
+
+test('a paused purpose retains its record without taking scheduler focus from current plans or private events',()=>{
+ for(const phase of ['pending','ready','needs_definition']){
+  const f=fixture({phase,nextAt:NOW,notBefore:NOW,focus:{state:'paused',pausedAt:NOW-1000,pausedBy:'new-purpose'}}),before=structuredClone(f.journey),list=f.read();
+  assert.equal(has(list,f.journey.id),false);
+  for(const id of ['current-note','current-message','synthetic-other-owner','current-plan','idle','new-owner-event','urgent-work'])assert.equal(has(list,id),true,phase+' '+id);
+  assert.deepEqual(f.journey,before);
+ }
+});
+
 test('a saved future journey leaves current notes, social messages, another owner task, plans and idle runnable',()=>{
  const f=fixture(),before=structuredClone(f.life),list=f.read();
  for(const id of ['current-note','current-message','synthetic-other-owner','current-plan','idle','new-owner-event','urgent-work'])assert.equal(has(list,id),true,id);
@@ -26,32 +42,33 @@ test('a saved future journey leaves current notes, social messages, another owne
 test('a future notBefore still releases unrelated work when nextAt is already due',()=>{
  const f=fixture({nextAt:NOW-1,notBefore:NOW+3600000}),list=f.read();
  for(const id of ['current-note','current-message','synthetic-other-owner','current-plan','idle'])assert.equal(has(list,id),true,id);
+ assert.equal(has(list,f.journey.id),false,'an automatic schedule still honors the explicit future time');
 });
 
-test('a needs-definition journey waiting for a future definition time does not become a global focus',()=>{
+test('a future record-definition retry does not turn the original purpose into an action lock',()=>{
  const f=fixture({phase:'needs_definition',nextAt:0,notBefore:0,definitionNextAt:NOW+600000}),list=f.read();
  for(const id of ['current-note','current-message','synthetic-other-owner','current-plan','idle'])assert.equal(has(list,id),true,id);
- assert.equal(has(list,f.journey.id),false);
+ assert.equal(has(list,f.journey.id),true);assert.equal(list.find(t=>t.ownerTaskId===f.journey.id).definitionOnly,false);
 });
 
-test('a due pending or ready journey retains owner priority and suppresses unrelated idle plans',()=>{
+test('a due pending or ready journey retains owner priority without suppressing unrelated plans',()=>{
  for(const phase of ['pending','ready']){
   const f=fixture({phase,nextAt:NOW,notBefore:NOW}),list=f.read();
   assert.equal(has(list,f.journey.id),true);assert.equal(has(list,'new-owner-event'),true);assert.equal(has(list,'urgent-work'),true);
-  for(const id of ['idle','current-plan','current-note','current-message','synthetic-other-owner'])assert.equal(has(list,id),false,phase+' '+id);
+  for(const id of ['idle','current-plan','current-note','current-message','synthetic-other-owner'])assert.equal(has(list,id),true,phase+' '+id);
   const task=list.find(candidate=>candidate.ownerTaskId===f.journey.id);assert.equal(task.priority,0);assert.equal(admission(f.life,task,f.cfg,{now:NOW}).allowed,true);
  }
 });
 
-test('a due needs-definition journey keeps its own bounded definition round ahead of unrelated idle work',()=>{
+test('a due missing-steps purpose can act normally while unrelated work remains available',()=>{
  const f=fixture({phase:'needs_definition',nextAt:0,notBefore:0,definitionNextAt:NOW}),list=f.read(),task=list.find(candidate=>candidate.ownerTaskId===f.journey.id);
- assert.ok(task);assert.equal(task.definitionOnly,true);assert.equal(has(list,'idle'),false);assert.equal(has(list,'current-plan'),false);assert.equal(has(list,'new-owner-event'),true);assert.equal(has(list,'urgent-work'),true);
+ assert.ok(task);assert.equal(task.definitionOnly,false);assert.equal(has(list,'idle'),true);assert.equal(has(list,'current-plan'),true);assert.equal(has(list,'new-owner-event'),true);assert.equal(has(list,'urgent-work'),true);
 });
 
-test('real travelling, working and waiting-event phases protect inflight purposes regardless of a later timestamp',()=>{
+test('task phase records alone never become a global lock on unrelated current work',()=>{
  for(const phase of ['travelling','working','waiting_event']){
   const f=fixture({phase,nextAt:NOW+86400000,notBefore:NOW+86400000}),list=f.read();
-  for(const id of ['idle','current-plan','current-note','current-message'])assert.equal(has(list,id),false,phase+' '+id);
+  for(const id of ['idle','current-plan','current-note','current-message'])assert.equal(has(list,id),true,phase+' '+id);
   assert.equal(has(list,'new-owner-event'),true);assert.equal(has(list,'urgent-work'),true);
  }
 });

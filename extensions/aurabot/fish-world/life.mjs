@@ -148,6 +148,23 @@ export class LifeEngine {
     if(this.l.round?.status==='stopping')void this.host.cancel(this.l.round.sessionId).catch(()=>{});
     return result;
   }
+  restorePurpose(input,source){
+    if(this.closed||this.bridge.fatal||!this.authorized()||this.lock||this.l.externalPending||this.l.round)throw Error('当前有执行或状态不可写，保留原目的后再交接');
+    const {sessionId,expectedTurnKey,ownerText,sourceMessageId,journey}=input||{};
+    if(typeof sessionId!=='string'||typeof expectedTurnKey!=='string'||!expectedTurnKey||typeof ownerText!=='string'||!ownerText.trim()||ownerText.length>2000||typeof sourceMessageId!=='string'||!sourceMessageId||sourceMessageId.length>200)throw Error('恢复目的需要当前会话、原主人消息和精确来源键');
+    if(source?.kind!=='owner'||source.origin!=='native-owner-event'||source.owner!==this.identity().owner||!sameSession(source.sessionId,sessionId)||source.sourceMessageId!==sourceMessageId||source.ownerText!==ownerText)throw Error('恢复目的尚未核验当前主人原始来源');
+    const revision=this.l.revision,draft=structuredClone(this.l);
+    const prepared=(()=>{const l=draft;
+      const context=ownerTaskContext(l,sessionId);if(context?.key!==expectedTurnKey)throw Error('主人已经有新消息，不能覆盖当前目的');
+      if(typeof context.ownerText==='string'&&context.ownerText!==ownerText)throw Error('当前目的正文已变化，不能以旧消息替代');
+      const pending=rememberOwnerTurn(l,this.identity(),{text:ownerText,sessionId,turnKey:'purpose-recovery:'+expectedTurnKey,confirmedWorld:true},this.clock());if(!pending)throw Error('只恢复明确的当前目的，不能用历史资料、问题或否定句新增行动');
+      const result=registerJourney(l,journey,{sessionId,identity:this.identity(),now:this.clock(),data:this.bridge.data,sourceKind:'owner'}),task=l.ownerTasks.find(t=>t.id===result.task.id);
+      task.source.restoredFrom={messageId:sourceMessageId,ownerTurnKey:expectedTurnKey,at:this.clock(),worldMutation:false};
+      if(pending.id!==task.id&&!pending.receipts.length&&!pending.completedSteps.length){pending.status='superseded';pending.phase='superseded';pending.nextAt=0;pending.supersededBy=task.id;}
+      l.revision++;return {...result,task:structuredClone(task)};
+    })();
+    return this.change(l=>{if(l.revision!==revision||ownerTaskContext(l,sessionId)?.key!==expectedTurnKey||this.lock||l.externalPending||l.round||this.closed||!this.authorized())throw Error('当前目的已变化，保留新安排');Object.assign(l,draft);return prepared;});
+  }
   fault(key,message){
     if(key.startsWith('budget-'))return this.noteQuotaAlert(key.slice(7));
     const now=this.clock();this.change(l=>{
@@ -261,6 +278,7 @@ export class LifeEngine {
   }
 
   prompt(events,round=this.l.round){return [buildTaskPrompt(this,events,round,this.host.memory?.()||''),
+    '任务追踪只帮助记住和续办，不授予或剥夺原世界工具的行动权限。旧任务未完成、缺步骤、尚未登记都不能要求停手；按当前要求正常行动，并在过程中补记原目的、下一步与真实成果。目的续办以 originalPurpose 和 purposeSource 为准；goal/arrivalStep/steps 可含模型自拟安排，不能把旧资料或自加项目升级成主人的必做要求。focus=paused 只保存不抢执行，临时新目的登记后继续，需要恢复旧目的的调度时可用 resumeTaskId，不重做已成功或真实未知动作。ownerCompletionType=observe 的原要求只是到场看看：到达后用当前真实 world_now 与 fish_life_task(action=complete_observation)结清，不强加捡东西、购物等自选项目。明确购买目的须有同任务真实购买回执，查看货架、到店、库存或说买过都不是买成；若没有合适商品可如实保留未达成并换当前目的，不能假报完成。',
     round?.kind==='recovery'&&round.readOnly?'只读恢复先看交接的 unconfirmed：它只列真实未确认变更。若为空，取得当前 world_now 后即可用本轮精确回执正常 fish_life_finish，planChanges=[]、importance=routine、share=""；不用为只读超时追查旧日程、重复核对已成功购买或补故事，不声称旧任务全部完成。若非空，只读核对相关原动作，保留未知结果，不重放或伪造完成。合法的空计划恢复收尾已在本地终结，不再追加查询或结束语。':'',
     (this.l.ownerTasks||[]).some(task=>task.id===round?.ownerTaskId&&task.journey?.priorActions?.length)?'当前旅程的 journey.priorActions 是原私聊已成功提交动作的历史回执，保留原时间；不得重放、当成新事件分享或据此声称整件事已办完。若回执只是开始活动，按需只读查真实完成通知；保存并执行尚未完成的后续目的，保留原要求中的条件与自主决定。':'',
     '计划续行：说明文字 trigger 不会自动变成定时器。pending/active 必须登记明确 nextAt 或合法 waitCondition（time 的 at，event 的真实事件种类及对象，或 state 等待现场活动结束）；无法确定就保留待定义，不假装已经安排执行。自然精力/饥饿变化和只读查询不是任务进展。当前行程、班次或活动未真实结束时，普通日程等待对应通知；不因另一份日程重复出发、折返或打断。班内已有待办使用现场 task-*，不能用 work 重新上班代替。',
@@ -329,7 +347,6 @@ export class LifeEngine {
     const deferred=!isBackground&&isOwner&&mutating(name,exec.arguments)&&ownerTaskContext(this.l,exec.agent?.session?.id)?.deferred;
     if(deferred)this.ownerTurn(deferred.text,{sessionId:exec.agent.session.id,turnToken:deferred.turnKey,confirmedWorld:true});
     const taskDenied=ownerTaskGuard(this.l,this.bridge.data,exec,isBackground,now);if(taskDenied)return taskDenied;
-    if(!isBackground&&isOwner&&name===WORLD+'world_go'&&!taskForExecution(this.l,exec))return '这次出发尚未绑定要办的事；先用 fish_life_journey 登记 goal、真实 destination 和 arrivalStep，再按原工具出发。到了只算走完路，后续目的仍保留；不要重复提交出发。';
     if(isBackground){
       if(!r||!sameSession(r.sessionId,exec.agent?.session?.id)||r.status!=='running'||r.revision!==this.l.revision||this.cfg.stopped||!this.cfg.autonomy||this.cfg.observeOnly)return '本轮已停止、会话不匹配或主人改变安排';
       if(mutating(name,exec.arguments)&&(r.definitionOnly||r.planningOnly||r.availabilityOnly))return '本轮只核对空位、登记任务时间步骤或本地日程，不提交世界变更；原有未知结果和分享证据规则保持有效';

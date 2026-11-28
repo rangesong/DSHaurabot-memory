@@ -1,5 +1,6 @@
 import {createHash} from 'node:crypto';
 import {sessionKey} from './session-identity.mjs';
+import {knownWorldRejection} from './tool-output.mjs';
 
 const W='mcp__fish-world__world_',unique=values=>[...new Set(values.filter(value=>typeof value==='string'&&value.length>0&&value.length<=200))];
 const canonical=value=>Array.isArray(value)?value.map(canonical):value&&typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map(key=>[key,canonical(value[key])])):value;
@@ -50,7 +51,7 @@ export function continuationEvidence(life,round={}, {now=Date.now(),maxChars=240
  const actions=(life.journal||[]).flatMap((row,index)=>links.owned(row)?[actionOf(row,life,now,index)]:[]).filter(Boolean).sort((a,b)=>a.at-b.at||a.index-b.index),pending=new Map(),success=[];
  for(const action of actions){
   const {row,key}=action,line=typeof row.result==='string'?row.result.trim().split(/\r?\n/,1)[0]:'';
-  if(row.status==='failed'&&/^(?:Error:\s*)?\[E_RULE\]\s*\S/u.test(line)){
+  if(knownWorldRejection(row)){
    const prior=pending.get(key);pending.set(key,{...action,line,planIds:unique([...(prior?.planIds||[]),...links.forRow(row)]),ownerTaskIds:unique([...(prior?.ownerTaskIds||[]),row.ownerTaskId]),occurrences:(prior?.occurrences||0)+1});
   }else if(row.status==='confirmed'&&!row.isError&&!/^(?:Error:\s*)?\[E_[A-Z_]+\]/u.test(line)){
    pending.delete(key);success.push({...action,planIds:links.forRow(row)});

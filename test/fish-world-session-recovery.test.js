@@ -134,12 +134,12 @@ test('prior action projection is bounded to eight records and retains recent ori
  recover(f);assert.equal(f.task.journey.priorActions.length,8);assert.equal(f.task.journey.priorActions[0].id,'bounded-4');assert.equal(f.task.journey.priorActions.at(-1).id,'bounded-11');
 });
 
-test('an exact historical success cannot be redefined or submitted merely with a new request_id',()=>{
+test('an exact historical success cannot be redefined as unfinished work and remains evidence rather than an action permission lock',()=>{
  const f=fixture();recover(f);
  assert.throws(()=>defineOwnerTask(f.life,{id:f.task.id,expectedRevision:f.task.revision,steps:[{tool:W+'do',arguments:'{"request_id":"new-request","id":"read"}',nextStep:'重复阅读开始'}]},{sessionId:'session-'+OWNER,now:NOW}),/成功回执|重放/);
  Object.assign(f.task,{phase:'pending',finalAction:{tool:W+'do',arguments:{id:'read'}}});
  const exec={name:W+'do',arguments:{request_id:'new-request',id:'read'},agent:{session:{id:'session-'+OWNER}}};
- assert.match(ownerTaskGuard(f.life,{state:{},life:f.life},exec,false,NOW),/成功|重放/);
+ const before=structuredClone(f.task),journal=structuredClone(f.life.journal);assert.equal(ownerTaskGuard(f.life,{state:{},life:f.life},exec,false,NOW),undefined);assert.deepEqual(f.task,before);assert.deepEqual(f.life.journal,journal);
 });
 
 test('the exact-action rule permits a different amount while original purpose remains active',()=>{
