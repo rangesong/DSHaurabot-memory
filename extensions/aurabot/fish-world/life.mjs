@@ -177,6 +177,7 @@ export class LifeEngine {
     }
     if(l.round){
       if(l.round.status==='finished'){
+        if(l.round.localCompletion?.kind==='readonly-recovery-finished'){await this.completePreparedRecovery(l.round.id);return;}
         if(await this.host.idle(l.round.sessionId))this.end(true);
         return;
       }
@@ -241,9 +242,11 @@ export class LifeEngine {
     const roundId=round.id;
     void Promise.resolve().then(()=>this.host.run(prepared.prompt||prompt,prepared)).then(async()=>{
       if(this.l.round?.id!==roundId)return;
+      if(this.l.round.localCompletion?.kind==='readonly-recovery-finished'){await this.completePreparedRecovery(roundId);return;}
       if(await this.host.idle(this.l.round.sessionId))this.end(true);else this.change(l=>{if(l.round?.id===roundId)l.round.status='finished';});
     }).catch(async()=>{
       if(this.l.round?.id!==roundId)return;
+      if(this.l.round.localCompletion?.kind==='readonly-recovery-finished'){await this.completePreparedRecovery(roundId);return;}
       if(this.l.round.localCompletion){if(await this.host.idle(this.l.round.sessionId))this.end(true);else this.change(l=>{if(l.round?.id===roundId)l.round.status='finished';});return;}
       this.change(l=>{l.round.status='stopping';l.round.stopReason='宿主回合失败，等待旧 Agent 停止';l.backoffUntil=this.clock()+300000;l.recovery=true;});
       void this.host.cancel(this.l.round.sessionId).catch(()=>{});this.fault('host','世界通道刚才未确认完成，已停下核对。');
@@ -258,6 +261,7 @@ export class LifeEngine {
   }
 
   prompt(events,round=this.l.round){return [buildTaskPrompt(this,events,round,this.host.memory?.()||''),
+    round?.kind==='recovery'&&round.readOnly?'只读恢复先看交接的 unconfirmed：它只列真实未确认变更。若为空，取得当前 world_now 后即可用本轮精确回执正常 fish_life_finish，planChanges=[]、importance=routine、share=""；不用为只读超时追查旧日程、重复核对已成功购买或补故事，不声称旧任务全部完成。若非空，只读核对相关原动作，保留未知结果，不重放或伪造完成。合法的空计划恢复收尾已在本地终结，不再追加查询或结束语。':'',
     (this.l.ownerTasks||[]).some(task=>task.id===round?.ownerTaskId&&task.journey?.priorActions?.length)?'当前旅程的 journey.priorActions 是原私聊已成功提交动作的历史回执，保留原时间；不得重放、当成新事件分享或据此声称整件事已办完。若回执只是开始活动，按需只读查真实完成通知；保存并执行尚未完成的后续目的，保留原要求中的条件与自主决定。':'',
     '计划续行：说明文字 trigger 不会自动变成定时器。pending/active 必须登记明确 nextAt 或合法 waitCondition（time 的 at，event 的真实事件种类及对象，或 state 等待现场活动结束）；无法确定就保留待定义，不假装已经安排执行。自然精力/饥饿变化和只读查询不是任务进展。当前行程、班次或活动未真实结束时，普通日程等待对应通知；不因另一份日程重复出发、折返或打断。班内已有待办使用现场 task-*，不能用 work 重新上班代替。',
     round?.definitionOnly?(round.kind==='plan-definition'?'本轮只修复最多六条缺触发条件的旧计划：先按需查当前现场及原始历史，已完成或过时的事项用真实证据结清；仍有效才用 fish_life_finish planChanges.update 保存准确 nextAt/合法 waitCondition、status=pending、expectedRevision 与本轮 evidenceIds。不能把旧日程直接改成现在执行，不能重做历史动作，不能提交世界变更或向QQ补报历史。':'本轮只定义主人任务：先核对现场，再用 fish_life_task 保存完整后续步骤与准确时间，不能提交世界变更。原要求需未来执行时保存未来 nextAt，定义完成后正常结束，由后续到期回合执行。'):'',
@@ -378,6 +382,21 @@ export class LifeEngine {
     if(!done||!old||!current||old[1]!==current[1]||Number(current[2])!==Number(old[2])+1||old[3]!==current[3])return null;
     return {eventId:q.id,callId:action.id,source:'done-and-readonly-progress',doneId:done.id,doneAt:done.t,observationId:now.id,at:this.clock()};
   }
+  recoveryCompletionTerminal(sessionId){
+    const r=this.l.round;return !!(r?.kind==='recovery'&&r.readOnly&&r.localCompletion?.kind==='readonly-recovery-finished'&&r.localCompletion.token&&sameSession(r.sessionId,sessionId));
+  }
+  recoveryCompletionReady(sessionId){
+    const r=this.l.round;return !!(this.recoveryCompletionTerminal(sessionId)&&!this.closed&&this.authorized()&&r.status==='finished'&&r.report&&!r.report.planChanges?.length&&r.revision===this.l.revision&&!this.lock&&!this.l.externalPending);
+  }
+  async completePreparedRecovery(roundId){
+    const r=this.l.round;if(r?.id!==roundId||!this.recoveryCompletionTerminal(r.sessionId))return false;
+    const {sessionId,revision}=r,token=r.localCompletion.token;
+    const invalidate=()=>{const current=this.l.round;if(!this.closed&&current?.id===roundId&&current.localCompletion?.token===token&&current.status==='finished'&&(current.revision!==this.l.revision||!this.authorized())){this.change(l=>{l.round.status='stopping';l.round.stopReason='只读恢复收尾期间安排已变化，保留原报告并停止旧回合';l.recovery=true;});void Promise.resolve().then(()=>this.host.cancel(sessionId)).catch(()=>{});}};
+    if(!this.recoveryCompletionReady(sessionId)){invalidate();return false;}
+    const current=()=>this.l.round?.id===roundId&&this.l.round.localCompletion?.token===token&&this.l.round.revision===revision&&this.recoveryCompletionReady(sessionId);
+    let idle;try{idle=await this.host.idle(sessionId);}catch{return false;}
+    if(!current()){invalidate();return false;}if(!idle)return false;this.end(true);return true;
+  }
   finish(input){
     const r=this.l.round;if(!r||r.status!=='running'||!r.observation)throw Error('缺少本轮真实观察');
     if(this.lock)throw Error('仍有世界调用未返回');
@@ -392,9 +411,11 @@ export class LifeEngine {
     const operations=preparePlanChanges(this.l,input,{round:r,now:this.clock(),fishId:this.bridge.data.fishId});
     const report={...input,reconciliations,facts,summary:clean(input.summary).slice(0,2000),share:clean(input.share).slice(0,1000),planChanges:operations};
     const sharing=previewShareEvidence(this.l,{fishId:this.bridge.data.fishId,round:r,report,now:this.clock()});
-    this.change(l=>{l.round.report=report;});
+    const terminalRecovery=!this.closed&&this.authorized()&&r.kind==='recovery'&&r.readOnly&&!operations.length&&r.revision===this.l.revision&&!this.l.externalPending&&!this.l.journal.some(j=>{if(j.round!==r.id)return false;let args;try{args=typeof j.args==='string'?JSON.parse(j.args):j.args;}catch{args={};}return mutating(j.tool,args||{});});
+    this.change(l=>{l.round.report=report;if(terminalRecovery){l.round.localCompletion={kind:'readonly-recovery-finished',token:randomUUID(),at:this.clock()};l.round.status='finished';}});
+    if(terminalRecovery){const roundId=r.id,sessionId=r.sessionId,token=r.localCompletion.token;setTimeout(()=>{if(this.l.round?.id===roundId&&this.l.round.localCompletion?.token===token&&this.recoveryCompletionReady(sessionId))void Promise.resolve().then(()=>this.host.cancel(sessionId)).catch(()=>{});},0);}
     return {ok:true,preparedPlans:operations.map(op=>({op:op.op,id:op.id,revision:op.plan?.revision??op.expectedRevision,candidateIds:op.candidateIds,
-      status:op.op==='propose-refinement'?'blocked-local':op.scheduleIssue?'blocked':op.plan?.status??op.patch?.status,scheduleIssue:op.scheduleIssue??op.plan?.scheduleIssue??op.patch?.scheduleIssue})),sharing,message:'回合报告已准备，结束本轮后原子提交；沿用以上程序计划 ID。计划若为 blocked 且有 scheduleIssue，表示尚未登记可执行条件，可在本轮修正准确时间或事件；不得为此重做世界动作。分享未准入只保留本地，不必为此重试。QQ 投递独立核对。'};
+      status:op.op==='propose-refinement'?'blocked-local':op.scheduleIssue?'blocked':op.plan?.status??op.patch?.status,scheduleIssue:op.scheduleIssue??op.plan?.scheduleIssue??op.patch?.scheduleIssue})),sharing,message:terminalRecovery?'只读恢复报告已验证，本轮在本地结束，不再追加模型请求或世界动作；QQ不播报内部核对。':'回合报告已准备，结束本轮后原子提交；沿用以上程序计划 ID。计划若为 blocked 且有 scheduleIssue，表示尚未登记可执行条件，可在本轮修正准确时间或事件；不得为此重做世界动作。分享未准入只保留本地，不必为此重试。QQ 投递独立核对。'};
   }
   end(completed,error=''){
     if(!this.l.round)return;

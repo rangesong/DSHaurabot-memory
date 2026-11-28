@@ -55,6 +55,7 @@ export function installUsage(api,getEngine){
  offs.push(api.dsh.on('llm/stream',(options,next)=>{
   const engine=getEngine();if(!engine||!ownSession(engine.l,options.sessionId))return next();
   return (async function*(){
+   if(engine.recoveryCompletionTerminal?.(options.sessionId)){const error=new Error('只读恢复已完成，不再追加模型请求');error.code='FISH_READONLY_RECOVERY_FINISHED';throw error;}
    const tokens=estimateTokens({messages:options.messages,tools:options.tools,system:options.system});
    const components={messagesTokens:estimateTokens(options.messages??[]),toolsTokens:estimateTokens(options.tools??[]),systemTokens:estimateTokens(options.system??''),toolsAvailable:Array.isArray(options.tools)};
    sources.set(key(options.sessionId),{model:options.model?.id||options.model,provider:options.provider?.id||options.provider});

@@ -2,6 +2,7 @@ import test from 'node:test';import assert from 'node:assert/strict';
 import {LifeEngine} from '../extensions/aurabot/fish-world/life.mjs';
 import {newLife} from '../extensions/aurabot/fish-world/state.mjs';
 import {carryForward} from '../extensions/aurabot/fish-world/world-window.mjs';
+import {installUsage} from '../extensions/aurabot/fish-world/host-runtime.mjs';
 const W='mcp__fish-world__world_';
 function fixture(){
  const now=Date.parse('2026-11-28T12:16:00+08:00'),identity={owner:'synthetic-owner',persona:'synthetic'},agent={session:{id:'synthetic-owner-session'}};
@@ -36,4 +37,15 @@ test('a failed background refresh invalidates the old observation and intent unt
 test('handoff distinguishes failed legacy reads from unconfirmed mutations without changing old journal records',()=>{
  const f=fixture();f.engine.l.journal.push({id:'synthetic-old-read',tool:W+'now',args:'{}',status:'uncertain'},{id:'synthetic-old-write',tool:W+'do',args:'{"id":"work"}',status:'uncertain'});
  const before=JSON.stringify(f.engine.l.journal),packet=carryForward(f.engine,f.identity,f.now);assert.deepEqual(packet.unconfirmed.map(x=>x.id),['synthetic-old-write']);assert.equal(JSON.stringify(f.engine.l.journal),before);
+});
+test('a prepared read-only recovery blocks its next model request while unrelated sessions remain usable',async()=>{
+ const f=fixture(),hooks=new Map();f.engine.l.sessionId=f.agent.session.id;
+ installUsage({dsh:{on(name,fn){hooks.set(name,fn);return()=>{};}}},()=>f.engine);
+ f.engine.l.round={id:'synthetic-recovery',sessionId:f.agent.session.id,kind:'recovery',readOnly:true,status:'running',revision:f.engine.l.revision,startedAt:f.now,observation:'Synthetic current shop',observationId:'synthetic-now',receipts:[{id:'synthetic-now',tool:W+'now',text:'Synthetic current shop',isError:false}],events:[],planIds:[],calls:1};
+ assert.match(f.engine.prompt([],f.engine.l.round),/若为空，取得当前 world_now 后即可/);
+ f.engine.finish({summary:'Synthetic observation complete',events:[],facts:['synthetic-now'],importance:'routine',share:''});
+ let calls=0;const next=()=>{calls++;return(async function*(){yield {synthetic:true};})();};
+ const blocked=()=>assert.rejects(async()=>{for await(const chunk of hooks.get('llm/stream')({sessionId:f.agent.session.id,messages:[],tools:[]},next))void chunk;},error=>error.code==='FISH_READONLY_RECOVERY_FINISHED');
+ await blocked();assert.equal(calls,0);f.engine.lock={callId:'synthetic-private-read'};await blocked();f.engine.lock=null;f.engine.l.revision++;await blocked();assert.equal(calls,0);
+ const other=[];for await(const chunk of hooks.get('llm/stream')({sessionId:'unrelated-owner-session',messages:[],tools:[]},next))other.push(chunk);assert.equal(calls,1);assert.deepEqual(other,[{synthetic:true}]);
 });
