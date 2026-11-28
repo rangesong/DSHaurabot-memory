@@ -137,27 +137,41 @@ function navigationProof(engine,receipt){
  return query;
 }
 function explicitNavigationEvidence(engine,args,evidence){
- if(typeof evidence!=='string'||!evidence||evidence.length>2000)return null;
+ const supplied=typeof evidence==='string'&&!!evidence&&evidence.length<=2000;
+ if(!supplied&&args.place!=='home')return null;
  const r=engine.l.round,latest=latestObservation(engine);
  for(let i=r.receipts.length-1;i>=0;i--){
-  const receipt=r.receipts[i];if(![PREFIX+'now',PREFIX+'go'].includes(receipt.tool)||!receipt.text.includes(evidence))continue;
+  const receipt=r.receipts[i];if(![PREFIX+'now',PREFIX+'go'].includes(receipt.tool))continue;
+  const original=supplied&&receipt.text.includes(evidence);if(!original&&args.place!=='home')continue;
   const query=navigationProof(engine,receipt);if(!query)continue;
   const lines=receipt.text.split(/\r?\n/);
   if(receipt.tool===PREFIX+'go'&&query.place===args.place&&!query.by&&/^去[^\r\n]+有 [1-9]\d* 种走法，world_go 时 by 填其中一个：$/u.test(lines[0])){
    const routes=lines.slice(1).filter(line=>/^· /u.test(line));
    const selected=routes.filter(line=>/^· .+? ([a-z][a-z0-9_-]{0,79}) —— /u.exec(line)?.[1]===args.by);
-   if(selected.length===1&&evidence.split(/\r?\n/).includes(selected[0]))return {line:evidence,receiptId:receipt.id};
+   if(selected.length===1){
+    if(original&&evidence.split(/\r?\n/).includes(selected[0]))return {line:evidence,receiptId:receipt.id};
+    if(args.place==='home')return {line:selected[0],receiptId:receipt.id};
+   }
   }
   // Preserve an explicitly declared current world_go menu; arbitrary profile/history text is not authority.
-  if(receipt.tool===PREFIX+'now'&&receipt.id===latest?.id&&lines.includes(evidence)){
+  if(original&&receipt.tool===PREFIX+'now'&&receipt.id===latest?.id&&lines.includes(evidence)){
    const target=/^· [^\r\n]+（world_go 填([^（）\r\n]+)）$/u.exec(evidence)?.[1];
    if(target===args.place)return {line:evidence,receiptId:receipt.id};
   }
  }
  return null;
 }
-function navigationEvidence(engine,args,evidence){
+function navigationEvidence(engine,args,evidence,cost){
  const explicit=explicitNavigationEvidence(engine,args,evidence);if(explicit)return explicit;
+ // The native place schema declares literal home; profile evidence only identifies this fish's own home.
+ // This is still an ordinary go dispatch with all original guards and uncertain-result accounting.
+ if(args.place==='home'&&args.by===undefined&&Number(cost)===0){
+  const self=identityProof(engine,engine.l.round);
+  if(self&&navigationProof(engine,self.receipt)){
+   const homes=self.receipt.text.split(/\r?\n/).filter(line=>/^家：[^\r\n]{1,200}$/u.test(line)&&line.slice(2).trim());
+   if(homes.length===1)return {line:homes[0],receiptId:self.receipt.id};
+  }
+ }
  const r=engine.l.round,target=args.place;if(typeof target!=='string'||!target.trim())return null;
  const placeId=entry=>/^.+?\s+([a-z][a-z0-9_-]{0,79})（/u.exec(entry)?.[1];
  const entries=body=>{const out=[];let depth=0,start=0;for(let i=0;i<body.length;i++){const c=body[i];if(c==='（'||c==='(')depth++;else if(c==='）'||c===')'){if(--depth<0)return [];}else if(!depth&&body.startsWith(' · ',i)){out.push(body.slice(start,i));start=i+3;i+=2;}}if(depth)return [];out.push(body.slice(start));return out;};
@@ -208,7 +222,8 @@ function selectEvidence(engine,input,args){
   if(quote.status==='unresolved')throw Object.assign(Error('当前商品价格不唯一或未明确，请核对本轮购买原行'),{code:'purchase-price-unavailable',pricePreparation:true,priceQuote:quote});
  }
  if(input.tool===PREFIX+'go'){
-  const selected=navigationEvidence(engine,args,evidence);if(selected)return selected.line;
+  const selected=navigationEvidence(engine,args,evidence,input.cost);if(selected)return selected.line;
+  if(args.place==='home'&&args.by!==undefined)throw Object.assign(Error('返家请先以 place=home 且不填 by 取得当前正式路线；再按原 by 执行，程序会自动选取路线原行，无需 world_find 或手抄 evidence'),{code:'need-exact-evidence',retryableAfterObservation:true,evidenceSnapshot:latestObservation(engine)?hash(latestObservation(engine).text):null,nextAction:{tool:'fish_life_action',arguments:{tool:PREFIX+'go',arguments:JSON.stringify({place:'home'}),category:'daily',cost:0}}});
   throw Object.assign(Error('当前真实地图或查找结果中没有唯一目的地原行；请先查当前目的地，程序会自动选择原回执，不需改写 evidence'),{code:'need-exact-evidence',retryableAfterObservation:true,evidenceSnapshot:latestObservation(engine)?hash(latestObservation(engine).text):null});
  }
  if(input.tool===PREFIX+'say'){
@@ -271,7 +286,7 @@ export async function executeSequencedAction({engine,tools,exec},input){
  const nextQuote=pricePreparation&&input.tool===PREFIX+'do'?purchaseQuote(engine.l.round.observation,args):null;
  const correctedPrice=nextQuote?.status==='quoted'&&Number.isFinite(Number(input.cost))&&Number(input.cost)>=nextQuote.expectedCost&&
   (hash(input.cost)!==existing.outcome.costInputSha256||hash(nextQuote)!==existing.outcome.priceQuoteSha256||hash(input.evidence||'')!==existing.outcome.evidenceInputSha256);
- const automaticNavigation=existing?.outcome?.retryableAfterObservation===true&&input.tool===PREFIX+'go'&&navigationEvidence(engine,args);
+ const automaticNavigation=existing?.outcome?.retryableAfterObservation===true&&input.tool===PREFIX+'go'&&navigationEvidence(engine,args,undefined,input.cost);
  let correctedEvidence=false;
  if(existing?.outcome?.retryableAfterObservation===true&&typeof input.evidence==='string'&&input.evidence&&hash(input.evidence)!==existing.outcome.evidenceInputSha256){
   try{correctedEvidence=selectEvidence(engine,input,args)===input.evidence;}catch{}
