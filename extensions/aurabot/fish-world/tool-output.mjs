@@ -26,3 +26,30 @@ export function purchaseReceipt(row){
  if(!bought||!/\p{L}.*\p{L}/u.test(bought[1])||/失败|未成交|没(?:有)?买到|尚未|等待确认|取消|撤销|timeout|abort|not[ \t_-]*connected/iu.test(line.slice(bought[0].length)))return null;
  return original;
 }
+
+/** A menu quote is evidence for a reservation, never proof that a purchase happened. */
+export function purchaseQuote(text,args={}){
+ const none={status:'none'};
+ if(typeof text!=='string'||!args||typeof args!=='object'||Array.isArray(args)||typeof args.id!=='string'||!/^[a-z][a-z0-9_-]{0,79}$/u.test(args.id))return none;
+ const escaped=args.id.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),token=new RegExp('(?:^|\\s)'+escaped+'(?=\\s|$)','u');
+ const split=line=>{const parts=[],stack=[],pairs={'（':'）','(':')','「':'」','《':'》'};let start=0;for(let i=0;i<line.length;i++){const c=line[i];if(pairs[c])stack.push(pairs[c]);else if(Object.values(pairs).includes(c)){if(stack.pop()!==c)return null;}else if(c==='、'&&!stack.length){parts.push(line.slice(start,i).trim());start=i+1;}}if(stack.length)return null;parts.push(line.slice(start).trim());return parts;};
+ const candidates=[];let buying=false,malformed=false;
+ for(const line of text.split(/\r?\n/)){
+  if(line==='在这里能买（world_do 填 id，count 是买几件）：'){buying=true;continue;}
+  if(!buying)continue;if(!line.trim())continue;if(!line.startsWith('· ')){buying=false;continue;}
+  const parts=split(line);if(!parts){if(token.test(line))malformed=true;continue;}
+  for(const part of parts)if(token.test(part))candidates.push(part);
+ }
+ if(!candidates.length&&!malformed)return none;
+ const unresolved={status:'unresolved',id:args.id};
+ if(malformed||candidates.length!==1)return unresolved;
+ const evidence=candidates[0],match=/^(.+?)\s+([a-z][a-z0-9_-]{0,79})\s+(\d+(?:\.\d{1,6})?)\s*贝(.*)$/u.exec(evidence);
+ if(!match||match[2]!==args.id||/\d+(?:\.\d+)?\s*贝/u.test(match[4]))return unresolved;
+ const unit=match[4].split(/[（(]/u,1)[0].trim();
+ if(unit&&(!/^(?:(?:一|每)[\p{L}]{1,4}|[/／][\p{L}]{1,4})$/u.test(unit)||/起|约|折|或|至|另|浮/u.test(unit)))return unresolved;
+ const quantity=args.count===undefined?1:args.count,unitPrice=Number(match[3]);
+ if(!Number.isSafeInteger(quantity)||quantity<1||quantity>10||!Number.isFinite(unitPrice))return unresolved;
+ const decimals=match[3].split('.')[1]?.length||0,expectedCost=Number((unitPrice*quantity).toFixed(decimals));
+ if(!Number.isFinite(expectedCost))return unresolved;
+ return {status:'quoted',id:args.id,evidence,unitPrice,quantity,expectedCost,unit};
+}

@@ -13,6 +13,7 @@ import {normalizePlanTriggers} from './plan-triggers.mjs';
 import {sameSession,ownerTaskContext} from './session-identity.mjs';
 import {recoverSessionAliasFailures} from './journey-recovery.mjs';
 import {nativeOwnerPurposeSource,captureNativeOwnerPurpose,attachConfirmedOwnerPurpose} from './owner-purpose.mjs';
+import {purchaseQuote} from './tool-output.mjs';
 
 export const WORLD='mcp__fish-world__';
 export const worldNames=['now','history','find','profile','go','do','say','friends','update','guide'].map(n=>WORLD+'world_'+n);
@@ -328,7 +329,14 @@ export class LifeEngine {
     if(!['daily','work','social','stocks','gift'].includes(category))throw Error('需要明确行动类别');
     if(category==='work'&&(this.l.ownerInstructions||[]).some(x=>/今天(?:别|不要)打工/.test(x.text)&&new Date(x.at+28800000).toISOString().slice(0,10)===new Date(this.clock()+28800000).toISOString().slice(0,10)))throw Error('主人今天要求不打工');
     if(!input.evidence||!r.receipts.some(x=>!x.isError&&x.text.includes(input.evidence)))throw Error('依据必须逐字来自本轮真实工具回执');
-    if(cost>0&&!new RegExp('(?:'+cost+'\\s*贝|'+cost+'\\s*[/／])').test(input.evidence))throw Error('消费依据中需要现场价格');
+    const quote=input.tool===WORLD+'world_do'?purchaseQuote(r.observation,args):{status:'none'};
+    const priceError=(message,code)=>Object.assign(Error(message),{code,pricePreparation:true,priceQuote:quote,...quote.status==='quoted'?{expectedCost:quote.expectedCost,unitPrice:quote.unitPrice,quantity:quote.quantity,unit:quote.unit}:{}});
+    if(quote.status==='unresolved')throw priceError('当前商品价格不唯一或未明确，请核对本轮购买原行','purchase-price-unavailable');
+    if(quote.status==='quoted'){
+      if(!r.receipts.some(x=>x.tool===WORLD+'world_now'&&!x.isError&&x.text===r.observation&&x.text.includes(quote.evidence)))throw priceError('当前商品报价缺少本轮真实现场回执','purchase-price-evidence-required');
+      input={...input,evidence:quote.evidence};
+      if(cost<quote.expectedCost)throw priceError('声明消费低于目标商品单价乘购买件数','purchase-cost-understated');
+    }else if(cost>0&&!new RegExp('(?:'+cost+'\\s*贝|'+cost+'\\s*[/／])').test(input.evidence))throw Error('消费依据中需要现场价格');
     const action=JSON.stringify(args);
     if(!c.stocks&&/股票|证券|买入|卖出|stock|trade/i.test(action))throw Error('自主证券交易未开启');
     if(!c.gifts&&/赠送|送礼|赠礼|gift/i.test(action))throw Error('自主赠礼未开启');
@@ -336,7 +344,7 @@ export class LifeEngine {
     if(input.tool===WORLD+'world_update'&&Object.keys(args).some(k=>k!=='outfit'))throw Error('自主更新仅允许换已有衣服，不能改世界身份和外貌');
     if(input.tool===WORLD+'world_do'&&args.id){
       if(!input.evidence.includes(args.id)&&proveCurrentSpoiledDiscard(this,args)?.evidence!==input.evidence)throw Error('行动依据必须包含现场完整 id');
-      const price=/(\d+(?:\.\d+)?)\s*贝/.exec(input.evidence);
+      const price=quote.status==='none'&&/(\d+(?:\.\d+)?)\s*贝/.exec(input.evidence);
       if(price&&!/报酬|工资|奖励|赚|收入|扣/.test(input.evidence)&&cost<Number(price[1])*(args.count||1))throw Error('声明消费低于现场单价和数量');
     }
     if(input.tool===WORLD+'world_go'&&args.by&&args.by!=='walk'&&args.by!=='bike'&&cost<=0)throw Error('付费交通需要先取得票价并预留消费');

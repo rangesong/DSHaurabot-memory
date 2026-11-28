@@ -2,6 +2,7 @@ import {createHash,randomUUID} from 'node:crypto';
 import {worldToolName} from './owner-tasks.mjs';
 import {sameSession} from './session-identity.mjs';
 import {parseWorldNowActivity} from './plan-activity.mjs';
+import {purchaseQuote} from './tool-output.mjs';
 const PREFIX='mcp__fish-world__world_';
 const origins=new WeakMap(),running=new WeakMap(),guardRejections=new WeakMap(),NOT_SUBMITTED=Symbol('local-guard-not-submitted');
 const canonical=value=>Array.isArray(value)?value.map(canonical):value&&typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map(k=>[k,canonical(value[k])])):value;
@@ -201,6 +202,11 @@ function evidenceFailure(engine,args,code){
 }
 function selectEvidence(engine,input,args){
  const receipts=engine.l.round.receipts.filter(r=>!r.isError),evidence=typeof input.evidence==='string'?input.evidence:'';
+ if(input.tool===PREFIX+'do'){
+  const latest=latestObservation(engine),quote=latest&&latest.text===engine.l.round.observation?purchaseQuote(latest.text,args):{status:'none'};
+  if(quote.status==='quoted')return quote.evidence;
+  if(quote.status==='unresolved')throw Object.assign(Error('当前商品价格不唯一或未明确，请核对本轮购买原行'),{code:'purchase-price-unavailable',pricePreparation:true,priceQuote:quote});
+ }
  if(input.tool===PREFIX+'go'){
   const selected=navigationEvidence(engine,args,evidence);if(selected)return selected.line;
   throw Object.assign(Error('当前真实地图或查找结果中没有唯一目的地原行；请先查当前目的地，程序会自动选择原回执，不需改写 evidence'),{code:'need-exact-evidence',retryableAfterObservation:true,evidenceSnapshot:latestObservation(engine)?hash(latestObservation(engine).text):null});
@@ -261,20 +267,24 @@ export async function executeSequencedAction({engine,tools,exec},input){
  let active=running.get(engine);if(!active)running.set(engine,active=new Map());
  if(active.has(key))return clone(await active.get(key));
  const existing=engine.l.round.actionSequences?.[actionKey],latest=latestObservation(engine);
+ const pricePreparation=existing?.outcome?.pricePreparation===true&&['purchase-price-unavailable','purchase-cost-understated','purchase-price-evidence-required'].includes(existing.outcome.code);
+ const nextQuote=pricePreparation&&input.tool===PREFIX+'do'?purchaseQuote(engine.l.round.observation,args):null;
+ const correctedPrice=nextQuote?.status==='quoted'&&Number.isFinite(Number(input.cost))&&Number(input.cost)>=nextQuote.expectedCost&&
+  (hash(input.cost)!==existing.outcome.costInputSha256||hash(nextQuote)!==existing.outcome.priceQuoteSha256||hash(input.evidence||'')!==existing.outcome.evidenceInputSha256);
  const automaticNavigation=existing?.outcome?.retryableAfterObservation===true&&input.tool===PREFIX+'go'&&navigationEvidence(engine,args);
  let correctedEvidence=false;
  if(existing?.outcome?.retryableAfterObservation===true&&typeof input.evidence==='string'&&input.evidence&&hash(input.evidence)!==existing.outcome.evidenceInputSha256){
   try{correctedEvidence=selectEvidence(engine,input,args)===input.evidence;}catch{}
  }
- const revalidate=existing?.outcome?.retryableAfterObservation===true&&existing.outcome.notSubmitted===true&&
-  existing.outcome.status==='blocked'&&['need-options','need-exact-evidence'].includes(existing.outcome.code)&&
-  !existing.calls.some(call=>call.tool===input.tool)&&(automaticNavigation||correctedEvidence||latest&&hash(latest.text)!==existing.outcome.evidenceSnapshot);
+ const revalidate=existing?.outcome?.notSubmitted===true&&existing.outcome.status==='blocked'&&
+  !existing.calls.some(call=>call.tool===input.tool)&&
+  (pricePreparation&&correctedPrice||existing.outcome.retryableAfterObservation===true&&['need-options','need-exact-evidence'].includes(existing.outcome.code)&&(automaticNavigation||correctedEvidence||latest&&hash(latest.text)!==existing.outcome.evidenceSnapshot));
  if(existing?.outcome&&!revalidate)return clone({...existing.outcome,reused:true});
  current(engine,exec,roundId,{reuse:true});
  if(existing&&!revalidate)throw Error('同一动作已有未确认的提交记录，禁止重做');
  current(engine,exec,roundId);
  const job=(async()=>{
-  engine.change(l=>{l.round.actionSequences??={};if(revalidate){const row=l.round.actionSequences[actionKey];row.preflightHistory??=[];row.preflightHistory.push({at:row.finishedAt,parent:row.parent,outcome:row.outcome});row.parent=origin;row.status='preparing';delete row.outcome;}else l.round.actionSequences[actionKey]={id:actionKey,source:'program-action-sequence',roundId,parent:origin,tool:input.tool,argumentsSha256:hash(args),category:input.category,cost:input.cost,at:engine.clock(),status:'preparing',calls:[]};});
+  engine.change(l=>{l.round.actionSequences??={};if(revalidate){const row=l.round.actionSequences[actionKey];row.preflightHistory??=[];row.preflightHistory.push({at:row.finishedAt,parent:row.parent,outcome:row.outcome,cost:row.cost,category:row.category});row.parent=origin;row.cost=input.cost;row.category=input.category;row.status='preparing';delete row.outcome;}else l.round.actionSequences[actionKey]={id:actionKey,source:'program-action-sequence',roundId,parent:origin,tool:input.tool,argumentsSha256:hash(args),category:input.category,cost:input.cost,at:engine.clock(),status:'preparing',calls:[]};});
   const row=()=>engine.l.round?.id===roundId?engine.l.round.actionSequences[actionKey]:null;
   const update=fn=>engine.change(l=>{if(l.round?.id!==roundId)throw Error('后台回合已结束');fn(l.round.actionSequences[actionKey],l.round,l);});
   let lastCall=null,mutationSubmitted=false;
@@ -324,6 +334,7 @@ export async function executeSequencedAction({engine,tools,exec},input){
    const uncertain=mutationSubmitted&&!error[NOT_SUBMITTED]&&journal?.status!=='failed'||record?.calls.some(c=>c.status==='dispatching'||c.status==='uncertain');
    const outcome={ok:false,status:uncertain?'uncertain':'blocked',actionId:actionKey,tool:input.tool,receiptId:lastCall,
     message:String(error.message||error).slice(0,1000),notSubmitted:!mutationSubmitted||!!error[NOT_SUBMITTED],automaticReplay:false,
+    ...error.pricePreparation?{code:error.code,pricePreparation:true,priceQuoteSha256:hash(error.priceQuote),costInputSha256:hash(input.cost),evidenceInputSha256:hash(input.evidence||''),...error.expectedCost===undefined?{}:{expectedCost:error.expectedCost,unitPrice:error.unitPrice,quantity:error.quantity,unit:error.unit}}:{},
     ...error.retryableAfterObservation?{code:error.code,retryableAfterObservation:true,evidenceSnapshot:error.evidenceSnapshot,evidenceInputSha256:hash(input.evidence||''),optionLines:error.optionLines,...error.nextAction?{nextAction:error.nextAction,then:error.then}:{}}:{}};
    if(record)update((entry,round,l)=>{entry.status=outcome.status;entry.phase='stopped';entry.finishedAt=engine.clock();entry.outcome=outcome;
     if(uncertain){round.status='stopping';round.stopReason='顺序动作结果未确认；停止追加并只读恢复';l.recovery=true;}});
