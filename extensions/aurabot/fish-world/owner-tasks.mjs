@@ -269,10 +269,19 @@ export function defineOwnerTask(l,input,{sessionId,background=false,taskId,now,d
  if(uncertainTask(l,task))throw Error('仍有已提交步骤或未确认变更，先只读核对，不得替换或重复');
  if(input.action==='complete_observation'){
   if(task.kind!=='journey'||!(task.journey.completionType==='observe'||task.ownerCompletionType==='observe')||purchaseRequired(task)||task.journey.stage!=='arrival-purpose'||!task.journey.arrivedAt||task.phase!=='needs_definition')throw Error('仅已确认到达的观察目的可以用现场读取完成，实际行动仍须成功动作');
-  const summary=requiredText(input.summary,'观察总结'),ids=input.evidenceIds;
-  if(!Array.isArray(ids)||!ids.length||ids.length>8||new Set(ids).size!==ids.length||ids.some(id=>!(l.journal||[]).some(row=>row.id===id&&row.tool===WORLD+'now'&&row.status==='confirmed'&&!row.isError&&sameSession(row.sessionId,sessionId)&&fresh(row.finishedAt||row.at,now)&&row.at>=Math.max(task.createdAt,task.journey.arrivedAt)&&(!background||row.round===l.round?.id))))throw Error('观察完成需要本会话／本轮到达后成功 world_now 的精确 evidenceIds');
-  const latest=(l.journal||[]).findLast(row=>row.tool===WORLD+'now'&&row.status==='confirmed'&&!row.isError&&sameSession(row.sessionId,sessionId)&&(!background||row.round===l.round?.id));if(!ids.includes(latest?.id))throw Error('观察完成必须包含当前最新成功 world_now 的回执，不能回用旧到访资料');
-  if(ids.some(id=>{const row=l.journal.find(row=>row.id===id),at=row.finishedAt||row.at,state=parseWorldNowActivity(row.result),location=state?.where?.text?.split(' · ',1)[0],label=task.destination?.label||task.journey.destinationName;if(state&&label&&(state.where.kind!=='place'||location!==label))return true;if(fresh(data?.at?.state,now)&&data.at.state>=at)return !exactPlace(data,task.journey.destination,now);return !label||state?.where?.kind!=='place'||location!==label;}))throw Error('当前所在地尚未确认与原目的地点一致；保留目的，不能用别处或旧到访资料结清');
+  const summary=requiredText(input.summary,'观察总结'),journal=l.journal||[],scoped=row=>{
+   if(row.owner!==undefined&&row.owner!==l.owner||row.persona!==undefined&&row.persona!==l.persona)return false;
+   const bound=(l.ownerTasks||[]).find(other=>other.id===row.ownerTaskId);return !bound||sameScope(l,bound);
+  };
+  // Model evidenceIds are optional hints. Only the current native journal selects proof.
+  const minimumAt=Math.max(task.createdAt,task.journey.arrivedAt,background?l.round?.startedAt||0:0);
+  const latest=journal.findLast(row=>row.tool===WORLD+'now'&&row.status==='confirmed'&&!row.isError&&scoped(row)&&typeof row.id==='string'&&!!row.id&&row.id.length<=200&&typeof row.result==='string'&&!!row.result.trim()&&sameSession(row.sessionId,sessionId)&&Number.isFinite(row.at)&&row.at>=minimumAt&&Number.isFinite(row.finishedAt??row.at)&&(row.finishedAt??row.at)>=row.at&&fresh(row.finishedAt??row.at,now)&&(!background||row.round===l.round?.id));
+  if(!latest)throw Error('观察完成需要本会话／本轮到达后新鲜成功 world_now；程序会自动选取真实回执，不需猜内部编号');
+  if(journal.slice(journal.indexOf(latest)+1).some(row=>scoped(row)&&(unknownMutation(row)||row.tool===WORLD+'go'&&row.status==='confirmed')))throw Error('现场观察之后已有新的出行或未确认变更，请先核对当前现场，不能沿用旧观察结清');
+  const at=latest.finishedAt??latest.at,state=parseWorldNowActivity(latest.result),location=state?.where?.text?.split(' · ',1)[0],label=task.destination?.label||task.journey.destinationName;
+  const wrongLocation=state&&label&&(state.where.kind!=='place'||location!==label)||(fresh(data?.at?.state,now)&&data.at.state>=at?!exactPlace(data,task.journey.destination,now):!label||state?.where?.kind!=='place'||location!==label);
+  if(wrongLocation)throw Error('当前所在地尚未确认与原目的地点一致；保留目的，不能用别处或旧到访资料结清');
+  const ids=[latest.id];
   task.journey.observation={summary,evidenceIds:clone(ids),at:now,localOnly:true,communicationStatus:'not-claimed'};task.status='completed';task.phase='completed';task.completedAt=now;task.nextAt=0;purposeFulfillment(task);record(task,{kind:'observation-completed',summary,evidenceIds:clone(ids),localOnly:true,communicationStatus:'not-claimed'},now);return {ok:true,task:clone(task)};
  }
  if(input.action!==undefined&&input.action!=='define')throw Error('未知任务操作');

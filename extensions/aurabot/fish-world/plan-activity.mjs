@@ -39,5 +39,11 @@ export function planActivityGuard(data,round,tool,args={},now=Date.now()){
   if(!state.doing)return;
   const working=/work|打工|上班|零工|帮工/.test(JSON.stringify(state.doing));
   if(working&&tool===W+'do'&&/^task-\d+$/.test(args.id||''))return;
+  // A server-declared open-ended activity can be left voluntarily. It has no
+  // completion notification to wait for; task tracking must not invent one.
+  const label=value=>String(value?.name||value?.text||'').replace(/（[^（）]*\d{1,2}:\d{2}[^（）]*）$/u,'').trim();
+  const cacheFresh=Number(data.at?.state)>0&&data.at.state<=now&&now-data.at.state<=180000;
+  const activity=Object.hasOwn(state.doing,'until')?state.doing:cacheFresh&&label(state.doing)&&label(state.doing)===label(data.state?.doing)?data.state.doing:null;
+  if(!working&&activity&&Object.hasOwn(activity,'until')&&activity.until===null&&!activity.endAt&&!activity.endClock&&!/\d{1,2}:\d{2}/.test(String(state.doing.name||'')+' '+String(state.doing.text||'')))return;
   return '当前活动尚未真实结束；普通计划等待完成通知后再续行，不以另一份日程打断。班内待办和主人新安排仍按原规则处理。';
 }
