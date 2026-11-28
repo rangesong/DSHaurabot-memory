@@ -351,10 +351,10 @@ export class LifeEngine {
     if(!this.lock&&this.l.externalPending?.callId===exec.callId)this.lock=this.l.externalPending;
     if(!exec.name.startsWith(WORLD)||!this.lock||this.lock.callId!==exec.callId)return;
     const text=clean(textOf(result)),isError=!!result.isError||result.value?.ok===false||/\[E_[A-Z_]+\]/.test(text);
-    const uncertain=isError&&/timeout|timed out|超时|abort|ECONNRESET|断线|not connected/i.test(text);
+    const uncertain=isError&&mutating(exec.name,exec.arguments)&&/timeout|timed out|超时|abort|ECONNRESET|断线|not connected/i.test(text);
     this.change(l=>{
       const entry=l.journal.find(x=>x.id===exec.callId);if(entry){Object.assign(entry,{status:uncertain?'uncertain':isError?'failed':'confirmed',isError,result:text,finishedAt:this.clock()});noteOwnerTaskResult(l,this.bridge.data,entry,this.clock());}
-      const r=l.round;if(r&&sameSession(exec.agent?.session?.id,r.sessionId)){r.receipts.push({id:exec.callId,tool:exec.name,text,isError});if(exec.name===WORLD+'world_now'&&!isError){r.observation=text;r.observationId=exec.callId;r.intent=null;}
+      const r=l.round;if(r&&sameSession(exec.agent?.session?.id,r.sessionId)){r.receipts.push({id:exec.callId,tool:exec.name,text,isError});if(exec.name===WORLD+'world_now'){r.observation=isError?'':text;if(isError)delete r.observationId;else r.observationId=exec.callId;r.intent=null;}
         if(exec.name===WORLD+'world_profile'&&!exec.arguments?.fish&&!isError)r.identityConfirmed=!!r.observation&&isExactFishIdentity(text,this.bridge.data.fishId);}
       if(r&&uncertain){r.status='stopping';r.stopReason='世界调用结果不确定，先停止并核对';l.recovery=true;}
       if(l.externalPending?.callId===exec.callId)l.externalPending=null;

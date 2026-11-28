@@ -78,6 +78,7 @@ function progressNotes(p,l){
 }
 const taskPlan=(p,l)=>({...Object.fromEntries(['id','revision','logicalKey','status','goal','reason','topic','subject','stage','nextStep','nextAt','expiresAt','businessAt','windowStart','windowEnd','trigger','waitCondition','sourceEventIds','sourceEvidenceIds','ownerInstructionRevision','lastCheckedAt','lastProgressAt'].filter(k=>p[k]!==undefined).map(k=>[k,p[k]])),...progressNotes(p,l),...taskExecution(p),constraints:(p.constraints||[]).filter(c=>!p.nextStep?.includes(c)),aliasCount:p.semanticAliases?.length||0,refinementCount:p.refinements?.length||0,historyReference:planReference(p)});
 const byId=rows=>Object.fromEntries(rows.map(row=>[row.id,row]));
+const unconfirmedMutation=row=>{const prefix='mcp__fish-world__world_';if(['go','do','say','update'].some(name=>row.tool===prefix+name))return true;if(row.tool!==prefix+'friends')return false;try{return (typeof row.args==='string'?JSON.parse(row.args):row.args)?.action!=='list';}catch{return true;}};
 export function carryForward(engine,identity,now=Date.now(),round=engine.l.round){
  const l=engine.l,d=engine.bridge.data,c=engine.cfg,ids=new Set(round?.planIds||[]),eventIds=new Set(round?.events||[]);
  const plans=l.plans.filter(p=>ids.has(p.id)).slice(0,12),events=l.queue.filter(q=>eventIds.has(q.id)).slice(0,8);
@@ -88,7 +89,7 @@ export function carryForward(engine,identity,now=Date.now(),round=engine.l.round
   day:dayKey(now),ledger:l.days[dayKey(now)]||{},limits:Object.fromEntries(['workLimit','idleLimit','socialLimit','shareLimit','singleSpend','dailySpend','stocks','gifts','maxCalls'].map(k=>[k,c[k]])),
   ownerInstructions:(l.ownerInstructions||[]).slice(-4),revision:l.revision,ownerInstructionRevision:l.ownerInstructionRevision,controls:l.controls,nextIdle:l.nextIdle,
   recovery:l.recovery,externalPending:l.externalPending||null,actionPhase:round?.intent?'ready_for_action':round?.identityConfirmed?'ready_for_intent':round?.observation?'need_identity':'need_observation',
-  unconfirmed:l.journal.filter(j=>['uncertain','executing'].includes(j.status)).slice(-8).map(j=>({id:j.id,tool:j.tool,status:j.status,reference:{kind:'journal',id:j.id}})),
+  unconfirmed:l.journal.filter(j=>['uncertain','executing'].includes(j.status)&&unconfirmedMutation(j)).slice(-8).map(j=>({id:j.id,tool:j.tool,status:j.status,reference:{kind:'journal',id:j.id}})),
   history:{tool:'fish_life_history',planCount:l.plans.filter(p=>planOpen(p.status)).length,eventCount:l.queue.filter(q=>open(q.status)).length,
     note:'按需分页查询本身份计划、事件、回执或旧窗口；每页不超过10条、4000字。长参数/结果保留原件，按引用继续展开。历史不能授权重做未知动作。'}};
 }

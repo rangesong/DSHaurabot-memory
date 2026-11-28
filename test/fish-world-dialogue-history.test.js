@@ -64,7 +64,8 @@ test('read-only recovery can read history and a timed-out read retains earlier r
  const recovery=fixture({texts:[page('目标点心')]});recovery.engine.l.recovery=true;recovery.engine.l.round.readOnly=true;
  assert.equal((await run(recovery)).status,'found');assert.equal(recovery.engine.l.outbox.length,0);
  const timeout=fixture({texts:[page('原始第一页','m_1'),{errorText:'timeout: synthetic'}]}),result=await run(timeout);
- assert.equal(result.pages.length,1);assert.match(result.dialogueText,/原始第一页/);assert.equal(result.stopReason,'inactive');assert.equal(timeout.trace.length,2);
+ assert.equal(result.pages.length,1);assert.match(result.dialogueText,/原始第一页/);assert.equal(result.stopReason,'query-failed');assert.equal(timeout.trace.length,2);
+ assert.equal(timeout.engine.l.round.status,'running');assert.equal(timeout.engine.l.recovery,false);assert.equal(timeout.engine.l.outbox.length,0);
 });
 test('date ambiguity preserves complete original evidence and relative Beijing dates are resolved',async()=>{
  const ambiguous=fixture({texts:[page('目标点心',undefined,'11月22日')]}),maybe=await run(ambiguous,{fish:'#42',query:'点心',date:'2026-11-22'});assert.equal(maybe.status,'possible');assert.match(maybe.dialogueText,/11月22日/);

@@ -20,7 +20,8 @@ const sameScope=(l,task)=>(!l.owner||task.owner===l.owner)&&(!l.persona||task.pe
 const workItems=text=>/(?:班上|班内|正在上班|已经上班|(?:打工|工作|上班)的?(?:地方|岗位|店里)).{0,24}(?:处理|有.{0,6}(?:工作|活|事))|(?:工作|活).{0,8}让你处理/.test(text);
 const dailyPlanning=text=>/(?:每天|每晚|每日)/.test(text)&&/23\s*[:：]\s*45|(?:二十三|23)点(?:四十五|45)/.test(text)&&/计划|规划|想好|安排/.test(text)&&/明天|次日|第二天/.test(text);
 const isMutation=(tool,args={})=>['go','do','say','update'].some(name=>tool===WORLD+name)||tool===WORLD+'friends'&&args.action!=='list';
-const uncertainTask=(l,task)=>task.phase==='uncertain'||(l.journal||[]).some(row=>row.ownerTaskId===task.id&&(['executing','uncertain'].includes(row.status)||row.status==='failed'&&isMutation(row.tool,parse(row.args)||{})&&!/\[E_RULE\]/.test(row.result||'')));
+const unknownMutation=row=>isMutation(row.tool,parse(row.args)||{})&&(['executing','uncertain'].includes(row.status)||row.status==='failed'&&!/\[E_RULE\]/.test(row.result||''));
+export const uncertainTask=(l,task)=>task.phase==='uncertain'||(l.journal||[]).some(row=>row.ownerTaskId===task.id&&unknownMutation(row));
 const taskOptions=text=>new Set([...String(text||'').matchAll(/^[ \t]*·[ \t]+(task-\d+)[ \t]+\S[^\r\n]*/gm)].map(match=>match[1]));
 const fresh=(at,now)=>Number.isFinite(at)&&at>0&&at<=now&&at>=now-180000;
 function currentWorkItems(l,data,now){
@@ -229,6 +230,7 @@ export function noteOwnerTaskResult(l,data,entry,now){
  const task=(l.ownerTasks||[]).find(t=>t.id===entry.ownerTaskId&&open(t)&&sameScope(l,t));if(!task)return;
  const args=parse(entry.args)||{};
  if(entry.status==='uncertain'){
+  if(!isMutation(entry.tool,args))return;
   task.phase='uncertain';l.recovery=true;record(task,{kind:'uncertain',callId:entry.id,tool:entry.tool,noReplay:true},now);return;
  }
  if(entry.status==='failed'){
@@ -337,9 +339,32 @@ export function reconcilePlanningObligations(l,now){
  }
  return {changed:restoredIds.length,restoredIds};
 }
+/** Repair only a fully proved read-only freeze; never infer an action or its former phase. */
+export function reconcileReadonlyOwnerTaskFailures(l,now){
+ const recoveredIds=[],journal=l.journal||[];
+ const scoped=row=>(row.owner===undefined||row.owner===l.owner)&&(row.persona===undefined||row.persona===l.persona);
+ const read=row=>{const args=parse(row.args);return args&&typeof args==='object'&&!Array.isArray(args)&&(['now','profile','history','find','guide'].some(tool=>row.tool===WORLD+tool)||row.tool===WORLD+'friends'&&args.action==='list');};
+ const time=row=>row.finishedAt??row.at;
+ if(!l.owner||!l.persona)return {changed:0,recoveredIds};
+ for(const task of l.ownerTasks||[]){
+  if(!open(task)||task.phase!=='uncertain'||task.owner!==l.owner||task.persona!==l.persona||!Number.isFinite(task.createdAt)||task.createdAt<=0||task.createdAt>now)continue;
+  const history=task.history||[],causal=history.filter(event=>['uncertain','unknown-failure','travel-evidence-missing'].includes(event.kind));
+  if(!causal.length||causal.some(event=>event.kind!=='uncertain'))continue;
+  const ownedSession=row=>sameSession(row.sessionId,taskSession(task))||sameSession(row.sessionId,task.currentSessionId)||row.round&&(l.contextWindow?.windows||[]).some(window=>sameSession(window.sessionId,row.sessionId));
+  const causes=causal.map(event=>journal.find(row=>row.id===event.callId&&row.ownerTaskId===task.id&&row.tool===event.tool&&scoped(row)&&read(row)&&['uncertain','failed'].includes(row.status)&&row.isError!==false&&sessionKey(row.sessionId)&&ownedSession(row)&&Number.isFinite(row.at)&&row.at>=task.createdAt&&Number.isFinite(time(row))&&time(row)>=row.at&&time(row)<=now&&Number.isFinite(event.at)&&event.at>=time(row)&&event.at<=now));
+  if(causes.some(row=>!row))continue;
+  if(journal.some(row=>unknownMutation(row)&&(row.ownerTaskId===task.id||!row.ownerTaskId&&causes.some(cause=>sameSession(row.sessionId,cause.sessionId))&&(!Number.isFinite(row.at)||row.at>=task.createdAt))))continue;
+  const reads=causes.map(cause=>journal.find(row=>row.id!==cause.id&&row.tool===cause.tool&&sameSession(row.sessionId,cause.sessionId)&&(!row.ownerTaskId||row.ownerTaskId===task.id)&&scoped(row)&&read(row)&&row.status==='confirmed'&&!row.isError&&typeof row.result==='string'&&!!row.result.trim()&&Number.isFinite(row.at)&&row.at>time(cause)&&Number.isFinite(time(row))&&time(row)>=row.at&&time(row)<=now));
+  if(reads.some(row=>!row))continue;
+  const previousNextAt=task.nextAt;task.phase='waiting_evidence';task.nextAt=0;
+  record(task,{kind:'readonly-failure-reconciled',causeCallIds:[...new Set(causes.map(row=>row.id))],readCallIds:[...new Set(reads.map(row=>row.id))],previousPhase:'uncertain',previousNextAt,restoredPhase:'waiting_evidence',phaseEvidence:'original-phase-not-proven',localOnly:true,noReplay:true},now);
+  recoveredIds.push(task.id);
+ }
+ return {changed:recoveredIds.length,recoveredIds};
+}
 /** Idempotent local reconciliation of existing task records, never a scan of historical chat. */
 export function reconcileOwnerTasks(l,data,now){
- let changed=reconcilePlanningObligations(l,now).changed;
+ let changed=reconcileReadonlyOwnerTaskFailures(l,now).changed+reconcilePlanningObligations(l,now).changed;
  for(const task of l.ownerTasks||[]){
   if(!open(task)||!sameScope(l,task)||uncertainTask(l,task))continue;
   task.history??=[];task.receipts??=[];task.completedSteps??=[];task.steps??=[];
