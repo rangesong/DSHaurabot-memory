@@ -125,7 +125,7 @@ export function preparePlanChanges(l,input,{round={},now=Date.now(),fishId=''}={
       const id=same?.id||'plan-'+hash(logicalKey).slice(0,24);
       const value={...Object.fromEntries(fields.filter(k=>p[k]!==undefined).map(k=>[k,p[k]])),...identity,id,logicalKey,
         revision:same?.revision||1,status:p.status||'pending',nextAt:timestamp(p.nextAt),expiresAt:timestamp(p.expiresAt),
-        progress:norm(p.progress),constraints:constraintsOf(p),semanticAliases:[],refinements:[],semanticIdentity:semanticPlan({...p,...identity,sourceEventIds},draft,context),sourceEventIds,sourceEvidenceIds:evidenceIds,lastCheckedAt:0,lastProgressAt:now,lastEvidenceFingerprint:'',
+        originalGoal:p.goal,progress:norm(p.progress),constraints:constraintsOf(p),semanticAliases:[],refinements:[],semanticIdentity:semanticPlan({...p,...identity,sourceEventIds},draft,context),sourceEventIds,sourceEvidenceIds:evidenceIds,lastCheckedAt:0,lastProgressAt:now,lastEvidenceFingerprint:'',
         supersedes:[],mergedFrom:[],createdAt:now,updatedAt:now,legacyRequestedId:raw.requestedId||null};
       if(!planOpen(value.status))throw Error('新计划必须使用开放初态，终态需针对已有 ID 明确处置');
       if(same&&same.nextAt!==value.nextAt&&!p.businessAt&&!p.windowStart&&!p.windowEnd&&round.planId!==same.id)throw Error('计划业务窗口不明确，请用已有 ID 更新：'+same.id);
@@ -179,6 +179,7 @@ function applyPrepared(l,changes,{now=Date.now(),roundId=null,recordHistory=true
     if(change.op==='create'){
       if(l.plans.some(p=>p.id===change.id||p.logicalKey===change.plan.logicalKey&&planOpen(p.status)))throw Error('计划身份在提交后发生变化');
       const created=structuredClone(change.plan);
+      created.originalGoal=created.goal;
       Object.assign(created,executionFields(created));
       normalizePlanTriggers({plans:[created],queue:l.queue,journal:l.journal},{now,bumpRevision:false});
       l.plans.push(created);
@@ -189,8 +190,16 @@ function applyPrepared(l,changes,{now=Date.now(),roundId=null,recordHistory=true
     if(!p||p.revision!==change.expectedRevision)throw Error('计划版本冲突：'+change.id);
     const before=structuredClone(p),supplied=change.patch||{},patch={...supplied,...executionFields(supplied)};
     if(change.targetId){const target=l.plans.find(x=>x.id===change.targetId);if(!target||target.revision!==change.targetExpectedRevision)throw Error('目标计划版本冲突');}
+    if(!p.originalGoal&&!planTerminal(before.status)){
+      const origin=(l.planHistory||[]).find(change=>change.id===p.id&&typeof change.before?.goal==='string');
+      p.originalGoal=origin?.before.originalGoal||origin?.before.goal||before.goal;
+    }
     for(const key of fields)if(key in patch)p[key]=structuredClone(patch[key]);
-    if(change.evidenceIds?.length&&patch.progress!==undefined)p.progress=norm(patch.progress);
+    if(patch.progress!==undefined&&!planTerminal(before.status)){
+      if(change.evidenceIds?.length){
+        p.progress=norm(patch.progress);p.progressEvidence={roundId,at:now,receiptIds:[...change.evidenceIds]};delete p.reportedProgress;
+      }else p.reportedProgress={version:1,text:norm(patch.progress),at:now,roundId,verification:'model-reported',instruction:false};
+    }
     if(change.targetId)p[change.op==='merge'?'mergedInto':'supersededBy']=change.targetId;
     if(change.op==='merge'){
       const target=l.plans.find(x=>x.id===change.targetId),previous=structuredClone(target);target.mergedFrom=unique([...(target.mergedFrom||[]),p.id]);target.revision++;target.updatedAt=now;
@@ -201,7 +210,7 @@ function applyPrepared(l,changes,{now=Date.now(),roundId=null,recordHistory=true
       if(recordHistory)(l.planHistory??=[]).push({at:now,roundId,op:'supersede-target',id:target.id,fromRevision:previous.revision,toRevision:target.revision,before:previous,evidenceIds:change.evidenceIds});
     }
     normalizePlanTriggers({plans:[p],queue:l.queue,journal:l.journal},{now,bumpRevision:false});
-    const changed=fields.some(k=>JSON.stringify(before[k])!==JSON.stringify(p[k]))||p.progress!==before.progress||JSON.stringify(p.scheduleIssue)!==JSON.stringify(before.scheduleIssue)||change.targetId;
+    const changed=fields.some(k=>JSON.stringify(before[k])!==JSON.stringify(p[k]))||p.progress!==before.progress||['originalGoal','reportedProgress','progressEvidence','scheduleIssue'].some(k=>JSON.stringify(p[k])!==JSON.stringify(before[k]))||change.targetId;
     if(changed){
       p.revision++;p.updatedAt=now;p.sourceEvidenceIds=unique([...(p.sourceEvidenceIds||[]),...(change.evidenceIds||[])]);
       if(recordHistory)(l.planHistory??=[]).push({at:now,roundId,op:change.op,id:p.id,fromRevision:before.revision,toRevision:p.revision,before,patch:structuredClone(patch),submittedPlan:change.submittedPlan,semanticReason:change.semanticReason,evidenceIds:change.evidenceIds});
@@ -245,7 +254,8 @@ export function finishPlanCheck(l,data,round,{now=Date.now(),unchangedLimit=1}={
     const freshActions=proof.receiptIds.flatMap(id=>{const j=l.journal.find(j=>j.id===id);if(!j)return [];let args;try{args=JSON.parse(j.args);}catch{return [];}return [{tool:j.tool,args,finishedAt:j.finishedAt}];});
     const prior=p.lastProgressProof,executedStep=round.planNextStep??prior?.executedStep??p.nextStep;
     const actions=[...(prior?.executedStep===executedStep?prior?.actions||[]:[]),...freshActions].filter((action,index,all)=>all.findIndex(other=>other.tool===action.tool&&JSON.stringify(other.args)===JSON.stringify(action.args))===index);
-    p.lastProgressAt=now;p.unchangedChecks=0;p.lastProgressProof={roundId:round.id,reason:proof.reason,receiptIds:proof.receiptIds,actions,executedStep};
+    const navigationOnly=freshActions.length>0&&freshActions.every(action=>action.tool==='mcp__fish-world__world_go');
+    p.lastProgressAt=now;p.unchangedChecks=0;p.lastProgressProof={roundId:round.id,reason:proof.reason,receiptIds:proof.receiptIds,actions,executedStep,scope:navigationOnly?'navigation':'business',partial:navigationOnly};
     const activity=freshActions.some(action=>/^mcp__fish-world__world_(?:go|do)$/.test(action.tool));
     if(activity&&!(p.nextAt>now)){
       if(p.waitCondition?.kind==='time'&&p.waitCondition.at<=now)p.lastTimeWake=p.waitCondition.at;

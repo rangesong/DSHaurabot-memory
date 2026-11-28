@@ -2,6 +2,12 @@
 
 Canonical source: extensions/aurabot/fish-world. Node built-ins only, no new database or model assets. Requires compatible Aurabot module API with tools guards, session/event, llm/stream, Agent.whenIdle, sessionQuery and core/usage.js. Existing persona, MCP, QQ, keys, quotas, sharing and non-blocking prompt refresh remain in place.
 
+## Purpose continuity
+
+Known business-rule rejections remain available across rounds, incremental snapshots and existing window rotation. A pure bounded projection reads only attributable owned-world journal results and returns at most four conditions within 2400 serialized characters. It keeps the failed business arguments, original time and receipt reference; transport request IDs are omitted. Only a confirmed success of the same business action removes that rejection. Stock quantities, navigation, model notes and later unrelated actions cannot silently erase it. Later mutation references are facts to inspect, never automatic proof that a condition was repaired. Closed unrelated purposes and old unlinked failures stay out of idle context. This adds no execution guard, automatic retry, wakeup, share or model call.
+
+Plans retain their original goal when their next stage is refined. A progress update without successful receipt references is retained as an explicitly model-reported note instead of being silently discarded; it does not prove progress, complete a task or release an unknown outcome. Existing and receipt-linked progress text is labelled as a note as well. Real action attribution remains the source of progress, and navigation carries an explicit partial-stage label while preserving its original arguments and replay protection. Original goals, progress notes and known rejections use the existing bounded handoff; the window algorithm, quotas and time/call budgets are unchanged. New note fields are additive within runtime 3/life 2; keep the latest ledger when restoring older code.
+
 The fixed Asia/Shanghai date formatter is reused during local cost summaries; day boundaries and quota keys are unchanged. Important-experience writes remain pending when the memory service explicitly returns `ok:false`, an error, `isError`, or a debug-only no-write result. Normal native insert/update and Thinkstar ingest receipts remain accepted. Existing five-minute pending-memory retries apply; no model or network probe is added, and prior recorded history is not reclassified.
 
 ## Scheduling and plans
