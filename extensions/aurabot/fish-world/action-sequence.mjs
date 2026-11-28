@@ -1,5 +1,6 @@
 import {createHash,randomUUID} from 'node:crypto';
 import {worldToolName} from './owner-tasks.mjs';
+import {sameSession} from './session-identity.mjs';
 const PREFIX='mcp__fish-world__world_';
 const origins=new WeakMap(),running=new WeakMap(),guardRejections=new WeakMap(),NOT_SUBMITTED=Symbol('local-guard-not-submitted');
 const canonical=value=>Array.isArray(value)?value.map(canonical):value&&typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map(k=>[k,canonical(value[k])])):value;
@@ -73,6 +74,38 @@ function latestObservation(engine){
  const round=engine.l.round,receipt=round.receipts.findLast(r=>r.tool===PREFIX+'now'&&!r.isError);
  return receipt&&proof(engine,round,PREFIX+'now',receipt.id)?receipt:null;
 }
+/** A declared home protocol, not permission to invent arbitrary action IDs. */
+export function proveCurrentSpoiledDiscard(engine,args){
+ const l=engine?.l,r=l?.round,now=engine?.clock?.(),suffix=/^throw-([A-Za-z][A-Za-z0-9_-]{0,79})$/u.exec(args?.id||'')?.[1];
+ if(!r||r.status!=='running'||r.revision!==l.revision||!Number.isFinite(r.startedAt)||!suffix||Object.keys(args).some(key=>!['id','count','request_id'].includes(key))||args.count!==undefined&&(!Number.isSafeInteger(args.count)||args.count<1||args.count>10))return null;
+ const who=engine.identity?.();if(l.owner&&l.owner!==who?.owner||l.persona&&l.persona!==who?.persona)return null;
+ const receipt=latestObservation(engine),p=receipt&&proof(engine,r,PREFIX+'now',receipt.id),j=p?.journal;
+ if(!j||j.isError||!sameSession(j.sessionId,r.sessionId)||j.result!==receipt.text||r.observation!==receipt.text||r.observationId&&r.observationId!==receipt.id||!Number.isFinite(now)||!Number.isFinite(j.at)||!Number.isFinite(j.finishedAt)||j.at<r.startedAt||j.finishedAt<j.at||j.finishedAt>now||now-j.finishedAt>180000)return null;
+ const after=l.journal.slice(l.journal.indexOf(j)+1);
+ if(after.some(row=>row.tool?.startsWith(PREFIX)&&(['executing','uncertain'].includes(row.status)||row.status==='confirmed'&&isMutation(row.tool,parse(row.args)||{}))))return null;
+ const lines=receipt.text.split(/\r?\n/),home=lines.map((line,index)=>/^你在[：:]家(?: · |$)/u.test(line)?index:-1).filter(index=>index>=0);
+ if(home.length!==1||home[0]>3)return null;
+ const templates=lines.filter(line=>/^你的家(?:（[^（）\r\n]{1,200}）)?\s*· 不要的东西 world_do 填 throw- 加 id 扔掉，count 是扔几件(?: · 摆着的换房间填 put- 加它的 home- 编号，name 填房间)?[。]?$/u.test(line));
+ const inventories=lines.filter(line=>/^你的食材（做饭用）：/u.test(line));
+ if(templates.length!==1||inventories.length!==1)return null;
+ const body=inventories[0].slice('你的食材（做饭用）：'.length),items=[];let stack=[],start=0;
+ const closes={'（':'）','(':')','《':'》','「':'」'};
+ for(let i=0;i<body.length;i++){
+  const c=body[i];if(closes[c])stack.push(closes[c]);else if(Object.values(closes).includes(c)){if(stack.pop()!==c)return null;}
+  else if(c==='、'&&!stack.length){items.push(body.slice(start,i).trim());start=i+1;}
+ }
+ if(stack.length)return null;items.push(body.slice(start).trim());
+ const matching=items.map(item=>/^(.+?)\s+([A-Za-z][A-Za-z0-9_-]{0,79})\s+([1-9]\d*)\s+([^\s（）()]{1,8})((?:[（(].*)?)$/u.exec(item)).filter(match=>match?.[2]===suffix);
+ if(matching.length!==1)return null;
+ const match=matching[0],quantity=Number(match[3]);if(!Number.isSafeInteger(quantity)||args.count!==undefined&&args.count>quantity)return null;
+ let tail=match[5],spoiled=false;
+ while(tail){
+  const first=tail[0],end=closes[first];if(!end)return null;let depth=0,stop=-1;
+  for(let i=0;i<tail.length;i++){if(tail[i]===first)depth++;else if(tail[i]===end&&!--depth){stop=i;break;}}
+  if(stop<0)return null;if(tail.slice(1,stop)==='坏了')spoiled=true;tail=tail.slice(stop+1).trim();
+ }
+ return spoiled?{evidence:inventories[0],observationId:receipt.id,templateLine:templates[0]}:null;
+}
 function homeRoomOptions(text){
  const lines=text.split(/\r?\n/),where=lines.findIndex(line=>/^你在[：:]家(?: · |$)/u.test(line));
  // Location and room options must be protocol headings, never a quotation or a past profile.
@@ -134,6 +167,7 @@ function selectEvidence(engine,input,args){
  }
  if(input.tool===PREFIX+'do'){
   if(lines.has(evidence))return evidence;
+  if(!lines.size){const discard=proveCurrentSpoiledDiscard(engine,args);if(discard)return discard.evidence;}
   if(lines.size!==1)throw evidenceFailure(engine,args,lines.size?'need-exact-evidence':'need-options');
  }else if(lines.size!==1)throw Object.assign(Error('未找到唯一、明确对应本动作的真实原行；请提供当前回执中的精确 evidence'),{code:'need-exact-evidence',retryableAfterObservation:true,evidenceSnapshot:latestObservation(engine)?hash(latestObservation(engine).text):null});
  return [...lines][0];

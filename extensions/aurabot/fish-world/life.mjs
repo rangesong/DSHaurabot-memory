@@ -1,4 +1,4 @@
-import {isExactFishIdentity} from './action-sequence.mjs';
+import {isExactFishIdentity,proveCurrentSpoiledDiscard} from './action-sequence.mjs';
 import {rememberOwnerTurn,taskForExecution,ownerTaskGuard,noteOwnerTaskResult,advanceOwnerTasks,endOwnerTaskRound,worldToolName,reconcileOwnerTasks,defineOwnerTask,registerJourney} from './owner-tasks.mjs';
 import {completedWindowRound,bindWindow,buildTaskPrompt} from './world-window.mjs';
 import {advancePlans,preparePlanChanges,applyPlanChanges,finishPlanCheck,planEvidenceFingerprint} from './plans.mjs';
@@ -307,7 +307,7 @@ export class LifeEngine {
     if(!c.gifts&&(args.give||args.treat||args.price))throw Error('贵重赠礼、请客或定价交易需要单独开启');
     if(input.tool===WORLD+'world_update'&&Object.keys(args).some(k=>k!=='outfit'))throw Error('自主更新仅允许换已有衣服，不能改世界身份和外貌');
     if(input.tool===WORLD+'world_do'&&args.id){
-      if(!input.evidence.includes(args.id))throw Error('行动依据必须包含现场完整 id');
+      if(!input.evidence.includes(args.id)&&proveCurrentSpoiledDiscard(this,args)?.evidence!==input.evidence)throw Error('行动依据必须包含现场完整 id');
       const price=/(\d+(?:\.\d+)?)\s*贝/.exec(input.evidence);
       if(price&&!/报酬|工资|奖励|赚|收入|扣/.test(input.evidence)&&cost<Number(price[1])*(args.count||1))throw Error('声明消费低于现场单价和数量');
     }
