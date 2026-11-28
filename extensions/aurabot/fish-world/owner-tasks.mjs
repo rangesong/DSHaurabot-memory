@@ -102,6 +102,9 @@ export function worldToolName(name){
 function directive(text){
  const value=String(text||'').trim();
  if(!value||value.length>2000||/[？?]|(?:吗|怎么样|去过|是不是|为什么|如何)/.test(value)||/^(?:[>“「『"]|他说|她说|你说|引用|例如|比如|假如|如果)/.test(value)||/^(?:(?:你|请|那|今天|先|现在|暂时|上午|下午|早上|中午|晚上|待会儿?|临时)[，,\s]*)*(?:不要|别(?!忘)|不用|不必|停止|取消|禁止|先不|暂时不|不去)/.test(value)||/^(?:(?:上午|下午|早上|中午|晚上|待会儿?|今天|临时)[，,\s]*)*(?:研究|浏览|学习|聊聊|讨论|查阅)/.test(value))return null;
+ // An offer to look is a purpose to remember, never permission to buy or eat.
+ // Unscoped offers still use the existing deferred-world activation below.
+ if(/^(?:(?:你|请|那|今天|现在|待会儿?)[，,\s]*)*可以(?:去|到)?看看[^\r\n]{1,180}$/u.test(value)&&!/(?:然后|再去|并且|买下来|买一|吃一|上班|打工)/.test(value))return {kind:'activity',optional:true,finalAction:null,scheduled:false};
  const addressed=/^(?:你|请|麻烦|记得|别忘|那|帮我|给我|替我|帮忙|每天|每晚|每日|打工的地方|工作的地方|班上|班内)/.test(value)&&!/^(?:你(?:知道|觉得|认为|说)|(?:每天|每晚|每日)(?:我|他|她|大家))/.test(value)&&!/(?:让我|让他|让她|由我|我来|他来|她来)处理/.test(value);
  if(addressed&&dailyPlanning(value))return {kind:'planning',optional:false,finalAction:null,scheduled:false};
  if(addressed&&workItems(value))return {kind:'work-items',optional:/没事|有空|可以|顺便/.test(value),finalAction:null,scheduled:/明天|后天|今晚|晚上|\d\s*(?:点|:|：)/.test(value)};
@@ -142,6 +145,28 @@ function activateOwnerFocus(l,task,sessionId,now){
  for(const other of l.ownerTasks||[])if(other!==task&&open(other)&&sameScope(l,other)&&other.kind!=='planning'&&!paused(other)&&sameSession(taskSession(other),sessionId)&&!ownerTaskInFlight(other)&&!other.scheduleRequired&&!(other.notBefore>now))pauseFocus(other,task.id,now);
  if(changed)record(task,{kind:'owner-purpose-focused',localOnly:true,noWorldMutation:true},now);return changed;
 }
+/** Post-action bookkeeping only. A failed proof leaves ordinary registration and raw actions unchanged. */
+function adoptJourneyTravel(l,task,{sessionId,data,now,existingTravelCallId}){
+ try{
+  const row=(l.journal||[]).findLast(row=>row.tool===WORLD+'go'&&(row.owner===undefined||row.owner===l.owner)&&(row.persona===undefined||row.persona===l.persona));
+  if(!row||existingTravelCallId!==undefined&&row.id!==existingTravelCallId||row.status!=='confirmed'||row.isError||row.ownerTaskId||!sameSession(row.sessionId,sessionId)||typeof row.id!=='string'||!row.id||row.id.length>200||row.fishId!==undefined&&row.fishId!==data?.fishId)return false;
+  if((l.ownerTasks||[]).some(other=>other.travelCallId===row.id||other.journey?.adoptedTravel?.receiptId===row.id||(other.receipts||[]).some(receipt=>receipt.id===row.id)))return false;
+  const args=rowArguments(row),sampled=data?.at?.state,where=data?.state?.where;
+  if(!args||typeof args!=='object'||Array.isArray(args)||args.place!==task.journey.destination||!Number.isFinite(row.at)||!Number.isFinite(row.finishedAt)||row.at<=0||row.finishedAt<row.at||row.finishedAt>now||!fresh(sampled,now)||sampled<row.finishedAt||data.errors?.state)return false;
+  const travelling=where?.kind==='trip'&&where.to?.id===args.place,arrived=exactPlace(data,args.place,now);
+  if(!travelling&&!arrived||typeof row.result!=='string')return false;
+  const first=row.result.split(/\r?\n/,1)[0],departure=/^好的[，,。]\s*(?:[0-2]?\d:[0-5]\d\s*)?出发[：:]/u.test(first);
+  const arrival=/([0-2]?\d:[0-5]\d)\s*到([^。；\n]+?)(?:[。；\n]|$)/u.exec(first),immediate=/^好的[，,。]\s*你(?:走进了|走到了|来到了|回到了)([^。！\n]+)[。！]?$/u.exec(first);
+  if(!(departure&&arrival)&&!(arrived&&immediate))return false;
+  const {request_id:ignored,...business}=args,step={tool:WORLD+'go',arguments:clone(business),nextStep:'前往 '+args.place+'；到达后：'+task.journey.arrivalStep,waitFor:'arrival'};
+  task.steps=[step];task.finalAction=clone(step);task.stepIndex=0;task.phase='travelling';task.nextAt=0;task.travelCompletesStep=true;task.travelCallId=row.id;task.travelAt=row.finishedAt;task.destination={id:args.place,label:arrival?.[2]?.trim()||immediate?.[1]?.trim()||where.to?.name||where.place?.name||null};
+  task.receipts.push({id:row.id,tool:row.tool,at:row.finishedAt});
+  task.journey.adoptedTravel={version:1,receiptId:row.id,occurredAt:row.at,confirmedAt:row.finishedAt,linkedAt:now,historyOnly:true,noReplay:true};
+  task.journey.priorActions=[{id:row.id,tool:row.tool,arguments:clone(args),at:row.at,finishedAt:row.finishedAt,...first.length<=1200?{result:first}:{resultOmitted:true},historyRef:{kind:'journal',id:row.id},localOnly:true,historyOnly:true}];
+  if(arrived){task.arrivalState={at:sampled,placeId:args.place};finishStep(task,{callId:row.id,kind:'post-action-arrival-state',stateAt:sampled},now);}
+  return true;
+ }catch{return false;}
+}
 /** Register an explicit local purpose. This never executes a world tool or infers an owner command. */
 export function registerJourney(l,input,{sessionId,identity,now,background=false,sourceKind='explicit-journey',data}={}){
  if(!sessionKey(sessionId)||!identity?.owner||!identity?.persona||!Number.isFinite(now)||now<=0||l.owner&&l.owner!==identity.owner||l.persona&&l.persona!==identity.persona)throw Error('出发目的必须绑定当前主人、人格与会话');
@@ -152,6 +177,8 @@ export function registerJourney(l,input,{sessionId,identity,now,background=false
  const context=ownerTaskContext(l,sessionId),suggestedSteps=input.steps===undefined?[]:normalizeSteps(input.steps),tasks=l.ownerTasks||[],scheduled=sourceKind==='world-schedule',turnKey=context?.key,current=tasks.find(t=>t.id===context?.taskId&&open(t)&&sameScope(l,t));
  const policy=input.switchPolicy??(input.replaceTaskId?'replace':'pause');
  if(!['pause','replace'].includes(policy)||input.resumeTaskId&&input.replaceTaskId)throw Error('需要明确目的切换方式，恢复与替换不能同时提交');
+ const existingTravelCallId=input.existingTravelCallId;
+ if(existingTravelCallId!==undefined&&(typeof existingTravelCallId!=='string'||!existingTravelCallId||existingTravelCallId.length>200||input.resumeTaskId))throw Error('已有出发回执需要精确编号，不能与恢复另一目的混用');
  if(scheduled&&tasks.some(t=>open(t)&&sameScope(l,t)&&t.kind!=='planning'&&!t.optional&&t.source?.kind!=='world-schedule'))throw Error('当前仍有主人目的；世界定时活动只能等待，不能替代或抢占');
  const journeys=tasks.filter(t=>open(t)&&sameScope(l,t)&&t.kind==='journey'&&sameSession(taskSession(t),sessionId));
  const foreground=tasks.filter(t=>open(t)&&sameScope(l,t)&&t.kind!=='planning'&&!paused(t)&&sameSession(taskSession(t),sessionId));
@@ -164,6 +191,7 @@ export function registerJourney(l,input,{sessionId,identity,now,background=false
   bindPurposeContext(l,sessionId,context,resumed,now);return {ok:true,reused:true,resumed:true,task:clone(resumed),pausedIds:other.map(t=>t.id),replacedIds:[]};
  }
  const same=journeys.find(t=>t.journey.goal===goal&&t.journey.destination===destination&&t.journey.arrivalStep===arrivalStep&&t.journey.completionType===completionType);
+ if(same&&!input.replaceTaskId&&existingTravelCallId!==undefined&&(same.travelCallId!==existingTravelCallId||same.journey.adoptedTravel?.receiptId!==existingTravelCallId))throw Error('当前目的没有接管该出发回执，保留原记录且不安排新的出发');
  if(same&&!input.replaceTaskId){if(paused(same)&&(background||scheduled))throw Error('后台和定时活动不能恢复主人挂起的目的');if(!background&&!scheduled)activateOwnerFocus(l,same,sessionId,now);if(!scheduled&&same.optional&&same.source.kind==='world-schedule'){const previousSource=clone(same.source);same.optional=false;same.priority=0;same.source={...same.source,kind:String(sourceKind).slice(0,80),confirmedByOwnerAt:now};record(same,{kind:'confirmed-by-owner',previousSource},now);}same.journey.registeredTurnKey=turnKey||hash(['journey',same.id]);bindPurposeContext(l,sessionId,context,same,now);return {ok:true,reused:true,task:clone(same),pausedIds:[],replacedIds:[]};}
  const replace=input.replaceTaskId?tasks.find(t=>t.id===input.replaceTaskId&&open(t)&&sameScope(l,t)&&sameSession(taskSession(t),sessionId)):null;
  if(input.replaceTaskId&&(!replace||replace.kind==='planning'))throw Error('只能明确替换当前同会话的未完成临时目的，不能替换每日规划');
@@ -174,7 +202,9 @@ export function registerJourney(l,input,{sessionId,identity,now,background=false
  const ownerPurpose=!background&&!scheduled&&directive(context?.ownerText)?context.ownerText:null;
  const task={id,revision:1,status:'active',phase:'pending',scheduleRequired:false,kind:'journey',optional:scheduled,priority:scheduled?3:0,instruction:goal,originalPurpose:ownerPurpose||goal,purposeSource:ownerPurpose?'owner-current':'agent-proposed',focus:{state:'active'},nextStep:step.nextStep,owner:identity.owner,persona:identity.persona,currentSessionId:sessionId,source:{kind:String(sourceKind).slice(0,80),sessionId,at:now},createdAt:now,updatedAt:now,nextAt:now,finalAction:clone(step),steps:[step],stepIndex:0,completedSteps:[],receipts:[],history:[],checks:0,journey:{goal,destination,arrivalStep,completionType,registeredSessionId:sessionId,registeredTurnKey:turnKey||hash(['journey',id]),...background?{registeredRoundId:l.round.id}:{},stage:'outbound',suggestedSteps}};
  if(ownerPurpose&&ownerObservation(ownerPurpose))task.ownerCompletionType='observe';
- if(exactPlace(data,destination,now)){task.steps=[];task.finalAction=null;task.phase='needs_definition';task.nextStep=arrivalStep;task.arrivalState={at:data.at.state,placeId:destination};task.journey.stage='arrival-purpose';task.journey.arrivedAt=data.at.state;task.journey.arrivalEvidence={kind:'state',at:data.at.state,placeId:destination};const label=data.state.where?.place?.name;if(typeof label==='string'&&label.trim())task.journey.destinationName=label.trim();}
+ const adopted=adoptJourneyTravel(l,task,{sessionId,data,now,existingTravelCallId});
+ if(existingTravelCallId!==undefined&&!adopted)throw Error('当前现场或原回执不足以补记既有行程，保留原记录且不安排新的出发');
+ if(!adopted&&exactPlace(data,destination,now)){task.steps=[];task.finalAction=null;task.phase='needs_definition';task.nextStep=arrivalStep;task.arrivalState={at:data.at.state,placeId:destination};task.journey.stage='arrival-purpose';task.journey.arrivedAt=data.at.state;task.journey.arrivalEvidence={kind:'state',at:data.at.state,placeId:destination};const label=data.state.where?.place?.name;if(typeof label==='string'&&label.trim())task.journey.destinationName=label.trim();}
  const pausedIds=[],replacedIds=[];
  for(const conflict of [...conflicts,...replace?[replace]:[]]){
   if(conflict===replace&&policy==='replace'&&!uncertainTask(l,conflict)&&!ownerTaskInFlight(conflict)){conflict.status='cancelled';conflict.phase='cancelled';conflict.nextAt=0;record(conflict,{kind:'journey-explicitly-replaced',replacedBy:id},now);replacedIds.push(conflict.id);}
@@ -345,7 +375,7 @@ export function noteOwnerTaskResult(l,data,entry,now){
   if(/^(?:去[^\n]{1,120}有\s*\d+\s*种走法|[^\n]*world_go 时 by 填其中一个)/.test(entry.result||''))return;
   const arrival=/(\d{1,2}:\d{2})\s*到([^。；\n]+?)(?:[。；\n]|$)/.exec(entry.result||'');
   const immediate=/^好的[，,。]\s*你(?:走进了|走到了|来到了|回到了)([^。！\n]+)[。！]?/.exec(entry.result||'');
-  if(task.kind==='journey'&&!arrival&&!immediate){task.phase='uncertain';l.recovery=true;record(task,{kind:'travel-evidence-missing',callId:entry.id,noReplay:true},now);return;}
+  if(task.kind==='journey'&&!arrival&&!immediate){task.phase='waiting_evidence';task.nextAt=0;task.contractIssue={code:'travel-evidence-missing',callId:entry.id,at:now};record(task,{kind:'travel-evidence-missing',callId:entry.id,purposeStillPending:true,localOnly:true,noReplay:true},now);return;}
   task.travelCompletesStep=final?.tool===entry.tool&&matches(args,final.arguments);task.destination={id:args.place,label:arrival?.[2]?.trim()||null};task.travelCallId=entry.id;task.travelAt=now;task.phase='travelling';task.nextAt=0;
   if(immediate){task.destination.label=immediate[1].trim();task.receipts.push(receipt);if(task.travelCompletesStep)finishStep(task,{callId:entry.id,kind:'immediate-arrival'},now);else{task.phase='ready';task.nextAt=now;}record(task,{kind:'arrived-immediately',callId:entry.id,purposeStillPending:open(task)},now);return;}
   task.receipts.push(receipt);record(task,{kind:'travel',destination:clone(task.destination),callId:entry.id,purpose:task.instruction,nextStep:task.nextStep},now);return;

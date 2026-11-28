@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {newLife} from '../extensions/aurabot/fish-world/state.mjs';
 import {LifeEngine} from '../extensions/aurabot/fish-world/life.mjs';
-import {registerJourney,ownerTaskGuard,ownerTaskCandidates,taskForExecution} from '../extensions/aurabot/fish-world/owner-tasks.mjs';
+import {registerJourney,ownerTaskGuard,ownerTaskCandidates,taskForExecution,noteOwnerTaskResult} from '../extensions/aurabot/fish-world/owner-tasks.mjs';
 import {setOwnerTaskContext} from '../extensions/aurabot/fish-world/session-identity.mjs';
 const W='mcp__fish-world__world_',NOW=Date.parse('2026-11-28T16:00:00+08:00'),sid='synthetic-advisory',identity={owner:'synthetic-owner',persona:'synthetic'};
 function fixture(){
@@ -50,4 +50,9 @@ test('unrelated private actions do not inherit an old task, while exact continua
 });
 test('the actual engine still refuses another tool while a global lock or external request is in flight',()=>{
  for(const field of ['lock','externalPending']){const f=fixture(),e=new LifeEngine({bridge:{data:f.data,change:fn=>fn(f.data)},clock:()=>NOW,identity:()=>identity,settings:()=>({}),host:{cancel:async()=>{}}});if(field==='lock')e.lock={callId:'original'};else e.l.externalPending={callId:'original',sessionId:sid};assert.match(e.guard(f.exec('do',{id:'new'}),false,true),/仍在执行|等待回执/);}
+});
+test('a confirmed navigation whose receipt format is unrecognized keeps its purpose without creating global recovery',()=>{
+ const f=fixture(),row={id:'confirmed-unparsed-go',ownerTaskId:f.task.id,sessionId:sid,tool:W+'go',args:'{"place":"synthetic-park"}',status:'confirmed',isError:false,result:'合成成功回执：行程已提交，具体抵达信息暂不可解析。',at:NOW,finishedAt:NOW};f.l.journal.push(row);
+ noteOwnerTaskResult(f.l,f.data,row,NOW);assert.equal(f.task.phase,'waiting_evidence');assert.equal(f.task.status,'active');assert.equal(f.task.contractIssue.code,'travel-evidence-missing');assert.equal(f.l.recovery,false);assert.equal(row.status,'confirmed');assert.equal(f.task.completedSteps.length,0);
+ assert.equal(ownerTaskGuard(f.l,f.data,f.exec('do',{id:'another'}),false,NOW),undefined);assert.equal(ownerTaskCandidates(f.l,NOW,f.data)[0].definitionOnly,false);
 });
