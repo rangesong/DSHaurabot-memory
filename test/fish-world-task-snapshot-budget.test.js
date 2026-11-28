@@ -1,0 +1,26 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {newLife,defaults} from '../extensions/aurabot/fish-world/state.mjs';
+import {ownerTaskSnapshot} from '../extensions/aurabot/fish-world/owner-tasks.mjs';
+import {carryForward} from '../extensions/aurabot/fish-world/world-window.mjs';
+const NOW=Date.parse('2026-11-28T16:20:00+08:00'),W='mcp__fish-world__world_',identity={owner:'synthetic-owner',persona:'synthetic'},fullArgs={id:'synthetic-cook',fullText:'完整参数不可截断'.repeat(100)},step={tool:W+'do',arguments:fullArgs,nextStep:'继续原目的'};
+function task(id,extra={}){return {id,...identity,revision:1,status:'active',phase:'pending',kind:'journey',instruction:'合成原目的',originalPurpose:'合成原目的',purposeSource:'owner-current',nextStep:'保留剩余目的',steps:[structuredClone(step)],finalAction:structuredClone(step),completedSteps:[{index:0,action:structuredClone(step),callId:'old-call'}],createdAt:NOW,focus:{state:'active'},...extra};}
+function fixture(){const l={...newLife(NOW),...identity,ownerTasks:[task('current'),task('paused',{focus:{state:'paused',pausedAt:NOW,pausedBy:'current'},fulfillment:{version:1,purchaseRequired:true,purchaseSucceeded:false,purchaseEvidenceIds:['old'],executionPending:true},journey:{priorActions:[{arguments:fullArgs,result:'旧回执'.repeat(1000)}]}})]};return {l,round:{id:'current-round',kind:'owner-task',ownerTaskId:'current',events:[],planIds:[]}};}
+test('a paused non-current task keeps the original purpose, concise progress and an exact history reference without bulk execution data',()=>{
+ const {l,round}=fixture(),before=structuredClone(l),row=ownerTaskSnapshot(l,round).find(t=>t.id==='paused');assert.equal(row.originalPurpose,'合成原目的');assert.equal(row.instruction,undefined);assert.equal(row.focus.state,'paused');assert.equal(row.completedStepCount,1);assert.equal(row.stepCount,1);assert.deepEqual(row.historyReference,{kind:'tasks',id:'paused'});for(const key of ['steps','completedSteps','finalAction','journey'])assert.equal(row[key],undefined,key);assert.equal(row.fulfillment.purchaseRequired,true);assert.equal(row.fulfillment.purchaseEvidenceIds,undefined);assert.deepEqual(l,before);
+});
+test('current task parameters and complete execution facts remain unchanged, even if its focus was paused during a handoff',()=>{
+ const {l,round}=fixture();l.ownerTasks[0].focus={state:'paused'};const row=ownerTaskSnapshot(l,round).find(t=>t.id==='current');assert.deepEqual(row.steps,l.ownerTasks[0].steps);assert.deepEqual(row.steps[0].arguments,fullArgs);assert.deepEqual(row.finalAction,l.ownerTasks[0].finalAction);assert.deepEqual(row.completedSteps,l.ownerTasks[0].completedSteps);
+});
+test('a distinct paused stage instruction can remain, while its full original purpose is never shortened',()=>{
+ const {l,round}=fixture();l.ownerTasks[1].instruction='不同阶段的合成说明';l.ownerTasks[1].originalPurpose='完整原始要求'.repeat(150);const row=ownerTaskSnapshot(l,round).find(t=>t.id==='paused');assert.equal(row.instruction,'不同阶段的合成说明');assert.equal(row.originalPurpose,l.ownerTasks[1].originalPurpose);
+});
+test('daily planning projects only the current instance completion and bounded historical counts',()=>{
+ const {l}=fixture(),completed=Object.fromEntries(Array.from({length:300},(_,i)=>['old-'+i,{roundId:'old-round-'+i,planIds:['old-plan-'+i]}]));completed['2026-11-28']={roundId:'current-planning',planIds:['current-plan']};l.ownerTasks=[task('planning',{kind:'planning',planning:{time:'23:45',timezone:'Asia/Shanghai',day:'2026-11-28',businessDay:'2026-11-29',completed}})];const before=structuredClone(l),row=ownerTaskSnapshot(l)[0];assert.deepEqual(row.planning.completed,{'2026-11-28':completed['2026-11-28']});assert.equal(row.planning.completedDayCount,301);assert.equal(row.planning.time,'23:45');assert.equal(row.planning.timezone,'Asia/Shanghai');assert.equal(row.planning.day,'2026-11-28');assert.equal(row.planning.businessDay,'2026-11-29');assert.deepEqual(row.planning.historyReference,{kind:'tasks',id:'planning'});assert.deepEqual(l,before);
+});
+test('an unfinished current planning date does not borrow an older day completion',()=>{
+ const {l}=fixture();l.ownerTasks=[task('planning',{kind:'planning',planning:{time:'23:45',timezone:'Asia/Shanghai',day:'2026-11-28',businessDay:'2026-11-29',completed:{'2026-11-27':{roundId:'old'}}}})];const row=ownerTaskSnapshot(l)[0];assert.deepEqual(row.planning.completed,{});assert.equal(row.planning.completedDayCount,1);
+});
+test('unknown mutation references remain explicit and raw ledgers stay intact while paused details shrink',()=>{
+ const {l,round}=fixture();l.journal.push({id:'real-unknown',ownerTaskId:'paused',tool:W+'do',args:'{"id":"original-target"}',status:'uncertain'});const before=structuredClone(l),data={life:l,fishId:'synthetic#1',at:{state:NOW},state:{doing:null}},engine={l,bridge:{data},cfg:defaults,clock:()=>NOW},snapshot=carryForward(engine,identity,NOW,round);assert.equal(snapshot.ownerTasks.find(t=>t.id==='paused').hasUnconfirmedMutation,true);assert.deepEqual(snapshot.unconfirmed,[{id:'real-unknown',tool:W+'do',status:'uncertain',reference:{kind:'journal',id:'real-unknown'}}]);assert.deepEqual(l,before);assert.ok(JSON.stringify(snapshot.ownerTasks.find(t=>t.id==='paused')).length<1000);
+});

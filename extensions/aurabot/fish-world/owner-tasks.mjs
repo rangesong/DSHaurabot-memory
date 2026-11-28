@@ -441,7 +441,19 @@ export function ownerTaskCandidates(l,now,data={}){
 }
 export function ownerTaskSnapshot(l,round){
  const tasks=(l.ownerTasks||[]).filter(t=>open(t)&&sameScope(l,t)&&(!round?.ownerTaskId||t.id===round.ownerTaskId||paused(t))).sort((a,b)=>Number(b.id===round?.ownerTaskId)-Number(a.id===round?.ownerTaskId)||Number(paused(a))-Number(paused(b))||b.createdAt-a.createdAt).slice(0,3);
- return tasks.map(t=>Object.fromEntries(['id','revision','status','phase','kind','instruction','originalPurpose','purposeSource','ownerCompletionType','focus','fulfillment','nextStep','nextAt','notBefore','finalAction','steps','stepIndex','completedSteps','destination','arrivalEventId','arrivalState','finalActionCallId','source','availability','planning','journey','activity','definitionAttempts','definitionNextAt','contractIssue'].filter(k=>t[k]!==undefined).map(k=>[k,t[k]])));
+ return tasks.map(t=>{
+  const compact=paused(t)&&t.id!==round?.ownerTaskId,fields=compact?['id','revision','status','phase','kind','instruction','originalPurpose','purposeSource','ownerCompletionType','focus','nextStep','nextAt']:['id','revision','status','phase','kind','instruction','originalPurpose','purposeSource','ownerCompletionType','focus','fulfillment','nextStep','nextAt','notBefore','finalAction','steps','stepIndex','completedSteps','destination','arrivalEventId','arrivalState','finalActionCallId','source','availability','planning','journey','activity','definitionAttempts','definitionNextAt','contractIssue'];
+  const out=Object.fromEntries(fields.filter(k=>t[k]!==undefined).map(k=>[k,t[k]]));
+  if(compact){
+   if(out.originalPurpose===out.instruction)delete out.instruction;
+   out.stepCount=t.steps?.length||0;out.completedStepCount=t.completedSteps?.length||0;out.hasUnconfirmedMutation=(l.journal||[]).some(row=>row.ownerTaskId===t.id&&unknownMutation(row));out.historyReference={kind:'tasks',id:t.id};
+   if(t.fulfillment)out.fulfillment=Object.fromEntries(['version','purchaseRequired','purchaseSucceeded','executionPending'].filter(k=>t.fulfillment[k]!==undefined).map(k=>[k,t.fulfillment[k]]));
+  }else if(t.planning){
+   const p=t.planning,completed=p.completed&&typeof p.completed==='object'&&!Array.isArray(p.completed)?p.completed:{};
+   out.planning={...Object.fromEntries(['time','timezone','day','businessDay'].filter(k=>p[k]!==undefined).map(k=>[k,p[k]])),completed:typeof p.day==='string'&&Object.hasOwn(completed,p.day)?{[p.day]:completed[p.day]}:{},completedDayCount:Object.keys(completed).length,historyReference:{kind:'tasks',id:t.id}};
+  }
+  return out;
+ });
 }
 export function ownerTaskPlanningComplete(l,round,now){
  const task=(l.ownerTasks||[]).find(t=>t.id===round.ownerTaskId&&open(t)&&sameScope(l,t)&&t.kind==='planning');if(!task)return {completed:false};
